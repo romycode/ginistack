@@ -3,7 +3,6 @@ package sqs
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -207,17 +206,6 @@ func unknownQueueAttribute(key string) *apiError {
 
 func invalidQueueAttribute(key string) *apiError {
 	return &apiError{"InvalidAttributeValue", "Invalid value for the parameter " + key + ".", 400}
-}
-
-func requestRegion(request *http.Request) string {
-	_, credentials, present := strings.Cut(request.Header.Get("Authorization"), "Credential=")
-	if present {
-		parts := strings.SplitN(credentials, "/", 5)
-		if len(parts) == 5 && queueNamePattern.MatchString(parts[2]) {
-			return parts[2]
-		}
-	}
-	return "us-east-1"
 }
 
 func (s *store) configure(name queueKey, attributes map[string]string) *apiError {

@@ -8,8 +8,8 @@ report_dir=${GINISTACK_REPORT_DIR:-"$root/.fidelity-reports"}
 addr=${GINISTACK_TEST_ADDR:-127.0.0.1:14566}
 go_binary=${GO:-go}
 mode=${1:-}
-if [[ $# -gt 1 || ($mode != "" && $mode != "--all-sqs") ]]; then
-  echo "Usage: $0 [--all-sqs]" >&2
+if [[ $# -gt 1 || ($mode != "" && $mode != "--all-sqs" && $mode != "--sns") ]]; then
+  echo "Usage: $0 [--all-sqs | --sns]" >&2
   exit 2
 fi
 pid=
@@ -108,6 +108,7 @@ checks=(
 
 workers=6
 timeout_args=()
+service=sqs
 if [[ $mode == "--all-sqs" ]]; then
   workers=20
   if [[ -n ${GINISTACK_CASE_TIMEOUT:-} ]]; then
@@ -118,14 +119,79 @@ if [[ $mode == "--all-sqs" ]]; then
     check=${path##*/check_}
     checks+=("${check%.py}")
   done
+elif [[ $mode == "--sns" ]]; then
+  workers=12
+  service=sns
+  checks=(
+    sns__sqs/a_message_filtered_out_at_publish_time_is_never_redelivered_when_the_policy_is_relaxed
+    clearing_a_filter_policy_with_an_empty_value_restores_unfiltered_delivery
+    concurrent_create_topic_same_name_converges
+    concurrent_tag_resource_distinct_keys_all_retained
+    create_topic_idempotent_and_conflict
+    create_topic_invalid_attribute_creates_nothing
+    create_topic_with_different_tags_rejected
+    delete_topic_cascades_subscriptions
+    display_name_over_100_characters_rejected
+    empty_vs_absent_message_attribute_rejected
+    fifo_message_group_id_validation
+    fifo_throughput_scope_message_group_narrows_the_deduplication_scope
+    fifo_throughput_scope_on_a_standard_topic_or_an_unknown_value_rejected
+    fifo_topic_attributes_roundtrip
+    fifo_topic_ordering_delivery
+    get_topic_attributes_malformed_arn_rejected
+    list_subscriptions_by_topic_pagination_exactness
+    list_subscriptions_paginates_and_drops_unsubscribed
+    list_tags_for_nonexistent_topic_fails
+    list_topics_and_subscriptions_forged_next_token_rejected
+    list_topics_paginates_every_created_topic_exactly_once
+    message_structure_json_selects_the_protocol_body_and_falls_back_to_default
+    notification_signature_verifies_against_the_signing_certificate
+    op_create_topic_invalid_name_rejected
+    publish_by_target_arn_naming_a_topic_delivers_like_topic_arn
+    publish_of_exactly_256_kib_delivered_intact_and_one_byte_more_rejected
+    publish_size_limit_counts_message_attributes
+    publish_still_delivers_to_siblings_when_a_subscribed_queue_is_deleted
+    publish_with_a_reserved_attribute_name_prefix_rejected
+    raw_delivery_to_sqs_drops_a_message_with_more_than_ten_attributes
+    raw_message_delivery_flag_is_case_insensitive_and_reads_back_lowercase
+    set_topic_attributes_invalid_signature_version_rejected
+    set_topic_attributes_invalid_tracing_config_rejected
+    set_topic_attributes_unknown_name_fails
+    sqs_subscription_delivers_the_published_message_unconditionally
+    standard_topic_rejects_fifo_dedup_id
+    subject_with_a_line_break_or_control_character_rejected
+    subscribe_invalid_endpoint_rejected
+    subscribe_same_endpoint_is_idempotent
+    tag_resource_lifecycle
+    tag_resource_lifecycle_and_limit
+    topic_set_attribute_immutable_rejected
+    unsubscribe_malformed_arn_fails
+    unsubscribe_nonexistent_is_idempotent
+    unsubscribe_stops_delivery
+    unsubscribe_stops_delivery_and_attribute_lookup_is_rejected
+    sns__sqs/fifo_topic_subscription_filter_policy_withholds_non_matching_messages
+    sns__sqs/queue_maximum_message_size_does_not_bound_sns_delivery
+    sns__sqs/sns_sqs_queue_policy_deny_suppresses_delivery
+    sns__sqs/sns_to_sqs_envelope_carries_the_subject_and_typed_message_attributes
+    sns__sqs/sqs_envelope_raw_bytes_are_pretty_printed_in_canonical_key_order
+  )
 fi
 
 run_check() {
-  local check=$1
+  local check=$1 directory=$service
+  local -a case_timeout=("${timeout_args[@]}")
+  if [[ $check == */* ]]; then
+    directory=${check%/*}
+    check=${check##*/}
+  fi
+  if [[ $check == a_message_filtered_out_at_publish_time_is_never_redelivered_when_the_policy_is_relaxed ]]; then
+    # Long polls and two deliberate absence windows can exceed the runner's 60-second default.
+    case_timeout=(--timeout "${GINISTACK_CASE_TIMEOUT:-120}")
+  fi
   PYTHONPATH="$suite/src" uv run --no-project --python 3.12 \
     --with 'boto3==1.43.108' --with 'botocore==1.43.108' --with 'certifi==2026.10.18' \
-    python -m fidelity_tests_runner run "$suite/behavioral/sqs/check_$check.py" \
-    --endpoint "http://$addr" --region us-west-2 --auth off --strict-cleanup "${timeout_args[@]}" \
+    python -m fidelity_tests_runner run "$suite/behavioral/$directory/check_$check.py" \
+    --endpoint "http://$addr" --region us-west-2 --auth off --strict-cleanup "${case_timeout[@]}" \
     --report "$report_dir/$check.json"
 }
 

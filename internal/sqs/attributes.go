@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
 type messageAttribute struct {
@@ -152,7 +154,7 @@ func normalizeNumber(raw, name string) (string, string) {
 	if parts[4] != "" {
 		var err error
 		exponent, err = strconv.Atoi(parts[4])
-		if err != nil || exponent < -maxRequestBody || exponent > maxRequestBody {
+		if err != nil || exponent < -awshttp.MaxRequestBody || exponent > awshttp.MaxRequestBody {
 			return "", invalid
 		}
 	}
