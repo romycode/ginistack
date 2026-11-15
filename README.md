@@ -28,6 +28,7 @@ aws sqs receive-message --queue-url "$queue_url" --wait-time-seconds 2
 - Orden FIFO por grupo, deduplicación explícita o por contenido durante cinco minutos y repetición de recepciones mediante `ReceiveRequestAttemptId`.
 - Traslado de mensajes a una DLQ del mismo tipo al intentar superar el límite de recepciones del origen. Se conservan el identificador, cuerpo, atributos personalizados y cabecera de trazas. Las políticas de redrive controlan qué orígenes pueden usar la DLQ. Las tareas de devolución se pueden iniciar, listar y cancelar.
 - Atributos de mensaje `String`, `Number` y `Binary`, con MD5 y selección por nombre o prefijo en recepción.
+- Cifrado SSE-SQS del cuerpo en memoria con AES-256-GCM y una clave local por proceso. `SqsManagedSseEnabled` permite configurarlo al crear o actualizar la cola. Los cambios afectan a los nuevos envíos y los mensajes ya cifrados conservan el cifrado mientras están en cola, incluso después de un redrive.
 - Políticas de cola con lectura, edición y borrado mediante `Policy`. `AddPermission` y `RemovePermission` modifican el mismo documento por `Sid`. El evaluador de `internal/policy` aplica un `Deny` explícito a `SendMessage` y `SendMessageBatch` para el principal local.
 
 El estado se guarda en memoria y se pierde al detener el proceso. Se usa una cuenta local fija y el servidor acepta credenciales de prueba sin verificar SigV4. Quedan pendientes las políticas de identidad de IAM, la autorización de otras operaciones y las integraciones con KMS, CloudFormation y CloudWatch.
@@ -65,7 +66,7 @@ La ejecución del 15 de noviembre de 2026 probó Ginistack `3080be3` con Go 1.27
 
 El único caso que agotó su presupuesto oficial de 60 segundos verifica un recibo de una cola borrada y recreada. Pasó en **63 segundos** con un presupuesto ampliado, lo que da **255 de 306** si se incluye esa repetición.
 
-Tras esa pasada se añadieron a la regresión dos casos sobre `AWSTraceHeader` y `SenderId`, diez sobre permisos y políticas de cola y dos sobre el tamaño de las solicitudes y los mensajes. La selección actual pasa **59 de 59**. Al combinar la pasada completa y las verificaciones posteriores, incluidos los 63 segundos del caso de la cola recreada, hay **268 de 306 casos aprobados** y **38 pendientes de pasar**. La tabla conserva el resultado de la última ejecución completa.
+Tras esa pasada se añadieron a la regresión dos casos sobre `AWSTraceHeader` y `SenderId`, diez sobre permisos y políticas de cola, dos sobre tamaño y uno sobre SSE-SQS. La selección actual pasa **60 de 60**. Al combinar la pasada completa y las verificaciones posteriores, incluidos los 63 segundos del caso de la cola recreada, hay **269 de 306 casos aprobados**. Se aplazan los **37 casos pendientes** que requieren otros servicios. La tabla conserva el resultado de la última ejecución completa.
 
 SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la solicitud supera los 1.638.400 bytes, el límite observado en AWS Emulator. Las solicitudes que caben en ese límite siguen sujetas al tamaño de mensaje configurado en la cola, que por defecto es de 1 MiB.
 
@@ -75,4 +76,5 @@ SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la sol
 | Protocolos | Los clientes Query/XML y JSON comparten estado. Pasaron los casos de envío, recepción y errores XML ejercitados por la suite. | Quedan casos de interoperabilidad que usan IAM y Lambda. |
 | DLQ | Traslado al superar el máximo de recepciones, políticas de redrive, listado de orígenes y devolución y cancelación de tareas. | Casos de configuración desde CloudFormation o asociados a una clave KMS. |
 | Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. Las trazas válidas se conservan, las vacías se rechazan y las de tipo o formato inválido se descartan al entregar. | |
+| Cifrado | SSE-SQS conserva byte por byte el cuerpo y los atributos del mensaje. | Resolución de claves y permisos de SSE-KMS. |
 | Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`, gestión de políticas de cola y permisos por `Sid`. Un `Deny` explícito bloquea el envío. | Evaluación de políticas de identidad y autorización de otras operaciones. El caso oficial de límites de políticas requiere crear usuarios en IAM. Quedan KMS, Lambda, CloudFormation y CloudWatch. |

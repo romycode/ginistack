@@ -15,6 +15,7 @@ type queueConfig struct {
 	delay           time.Duration
 	retention       time.Duration
 	maximumSize     int
+	managedSSE      bool
 	fifo            bool
 	contentDedup    bool
 	dedupScope      string
@@ -33,8 +34,8 @@ func validQueueName(name string) bool {
 	return (!fifo || len(name) <= 80) && queueNamePattern.MatchString(base)
 }
 
-func newQueueConfig(name string, attributes map[string]string) (queueConfig, *apiError) {
-	config := queueConfig{visibility: 30 * time.Second, retention: 4 * 24 * time.Hour, maximumSize: maxMessageSize, dedupScope: "queue", throughputLimit: "perQueue"}
+func newQueueConfig(name string, attributes map[string]string, secureTransport bool) (queueConfig, *apiError) {
+	config := queueConfig{visibility: 30 * time.Second, retention: 4 * 24 * time.Hour, maximumSize: maxMessageSize, managedSSE: secureTransport, dedupScope: "queue", throughputLimit: "perQueue"}
 	return config.withAttributes(name, attributes, true)
 }
 
@@ -87,6 +88,13 @@ func (c queueConfig) withAttributes(name string, attributes map[string]string, c
 			c.fifo, err = strconv.ParseBool(value)
 		case "ContentBasedDeduplication":
 			c.contentDedup, err = strconv.ParseBool(value)
+		case "SqsManagedSseEnabled":
+			switch value {
+			case "true", "false":
+				c.managedSSE = value == "true"
+			default:
+				return c, invalidQueueAttribute(key)
+			}
 		case "DeduplicationScope":
 			if value != "queue" && value != "messageGroup" {
 				return c, invalidQueueAttribute(key)
@@ -166,6 +174,8 @@ func (c queueConfig) changedAttribute(next queueConfig) string {
 		return "MessageRetentionPeriod"
 	case c.maximumSize != next.maximumSize:
 		return "MaximumMessageSize"
+	case c.managedSSE != next.managedSSE:
+		return "SqsManagedSseEnabled"
 	case c.fifo != next.fifo:
 		return "FifoQueue"
 	case c.contentDedup != next.contentDedup:
@@ -185,7 +195,7 @@ func (c queueConfig) changedAttribute(next queueConfig) string {
 
 func knownQueueAttribute(key string) bool {
 	switch key {
-	case "KmsMasterKeyId", "KmsDataKeyReusePeriodSeconds", "SqsManagedSseEnabled", "CreatedTimestamp", "LastModifiedTimestamp":
+	case "KmsMasterKeyId", "KmsDataKeyReusePeriodSeconds", "CreatedTimestamp", "LastModifiedTimestamp":
 		return true
 	}
 	return false

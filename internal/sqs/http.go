@@ -32,7 +32,7 @@ type router struct {
 }
 
 func NewHandler() http.Handler {
-	api := &service{store: store{queues: make(map[queueKey]*queue), deleted: make(map[queueKey]time.Time), incarnations: make(map[string]deletedIncarnation)}, cursorKey: []byte(token())}
+	api := &service{store: store{bodyCipher: newBodyCipher(), queues: make(map[queueKey]*queue), deleted: make(map[queueKey]time.Time), incarnations: make(map[string]deletedIncarnation)}, cursorKey: []byte(token())}
 	r := &router{operations: make(map[string]http.HandlerFunc)}
 	r.register("CreateQueue", api.createQueue)
 	r.register("GetQueueUrl", api.getQueueURL)

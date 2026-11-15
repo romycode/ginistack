@@ -81,7 +81,7 @@ func (s *service) createQueue(request *http.Request, input createInput) (queueIn
 	}
 	key := queueKey{region: requestRegion(request), name: input.QueueName}
 	arn := "arn:aws:sqs:" + key.region + ":" + accountID + ":" + key.name
-	if failure := s.store.create(key, arn, input.Attributes, input.Tags); failure != nil {
+	if failure := s.store.create(key, arn, input.Attributes, input.Tags, request.TLS != nil); failure != nil {
 		return queueInput{}, failure
 	}
 	return queueAddress(request, key), nil

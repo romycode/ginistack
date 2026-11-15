@@ -2,6 +2,7 @@ package sqs
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 
 type store struct {
 	mu           sync.Mutex
+	bodyCipher   cipher.AEAD
 	queues       map[queueKey]*queue
 	deleted      map[queueKey]time.Time
 	incarnations map[string]deletedIncarnation
@@ -31,6 +33,7 @@ type deletedIncarnation struct {
 
 type queue struct {
 	queueConfig
+	bodyCipher      cipher.AEAD
 	accessPolicy    *policy.Document
 	key             queueKey
 	incarnation     string
@@ -50,6 +53,7 @@ type queue struct {
 type message struct {
 	id               string
 	body             string
+	encryptedBody    []byte
 	md5              string
 	visibleAt        time.Time
 	sentAt           time.Time
@@ -95,7 +99,7 @@ func (q *queue) signal() {
 	q.changed = make(chan struct{})
 }
 
-func (s *store) create(name queueKey, arn string, attributes, tags map[string]string) *apiError {
+func (s *store) create(name queueKey, arn string, attributes, tags map[string]string, secureTransport bool) *apiError {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -135,7 +139,7 @@ func (s *store) create(name queueKey, arn string, attributes, tags map[string]st
 		}
 		return nil
 	}
-	config, failure := newQueueConfig(name.name, attributes)
+	config, failure := newQueueConfig(name.name, attributes, secureTransport)
 	if failure != nil {
 		return failure
 	}
@@ -144,6 +148,7 @@ func (s *store) create(name queueKey, arn string, attributes, tags map[string]st
 	}
 	s.queues[name] = &queue{
 		queueConfig:     config,
+		bodyCipher:      s.bodyCipher,
 		accessPolicy:    accessPolicy,
 		key:             name,
 		incarnation:     token(),
@@ -193,6 +198,7 @@ func (s *store) queueAttributes(name queueKey, requested []string) (map[string]s
 	all["QueueArn"] = q.arn
 	all["DelaySeconds"] = strconv.Itoa(int(q.delay / time.Second))
 	all["MessageRetentionPeriod"] = strconv.Itoa(int(q.retention / time.Second))
+	all["SqsManagedSseEnabled"] = strconv.FormatBool(q.managedSSE)
 	if q.accessPolicy != nil {
 		raw, _ := json.Marshal(q.accessPolicy)
 		all["Policy"] = string(raw)
@@ -323,6 +329,9 @@ func (q *queue) send(input messageInput) (sendOutput, *apiError) {
 		output.SequenceNumber = m.sequence
 		q.dedup[key] = dedupRecord{expires: now.Add(5 * time.Minute), output: output}
 	}
+	if q.managedSSE {
+		m.sealBody(q.bodyCipher)
+	}
 	q.messages = append(q.messages, m)
 	q.signal()
 	return output, nil
@@ -376,6 +385,11 @@ func (s *store) receive(ctx context.Context, name queueKey, count int, visibilit
 				next = nextOrEarlier(next, m.visibleAt)
 				continue
 			}
+			body, failure := m.openBody(q.bodyCipher)
+			if failure != nil {
+				s.mu.Unlock()
+				return nil, failure
+			}
 			m.receipt = q.incarnation + "." + token()
 			m.receipts = append(m.receipts, m.receipt)
 			q.receipts[m.receipt] = m
@@ -385,7 +399,7 @@ func (s *store) receive(ctx context.Context, name queueKey, count int, visibilit
 			if m.receiveCount == 1 {
 				m.firstReadAt = now
 			}
-			messages = append(messages, m.delivery(systemAttributes, requestedAttributes))
+			messages = append(messages, m.delivery(body, systemAttributes, requestedAttributes))
 			if len(messages) == count {
 				break
 			}
@@ -416,10 +430,10 @@ func (s *store) receive(ctx context.Context, name queueKey, count int, visibilit
 	}
 }
 
-func (m *message) delivery(systemAttributes, requestedAttributes []string) delivery {
+func (m *message) delivery(body string, systemAttributes, requestedAttributes []string) delivery {
 	selected := selectMessageAttributes(m.customAttributes, requestedAttributes)
 	return delivery{
-		MessageID: m.id, ReceiptHandle: m.receipt, MD5OfBody: m.md5, Body: m.body,
+		MessageID: m.id, ReceiptHandle: m.receipt, MD5OfBody: m.md5, Body: body,
 		Attributes:        m.systemAttributes(systemAttributes),
 		MessageAttributes: selected, MD5OfMessageAttributes: attributeDigest(selected),
 	}

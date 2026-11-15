@@ -130,19 +130,22 @@ func (q *queue) replay(attemptID string, now time.Time, timeout time.Duration, s
 	if !exists {
 		return nil, nil
 	}
+	messages := make([]delivery, 0, len(attempt.receipts))
 	for _, receipt := range attempt.receipts {
 		m := q.receipts[receipt]
 		if m == nil || m.receipt != receipt || !m.visibleAt.Equal(attempt.deadline) {
 			return nil, &apiError{"InvalidParameterValue", "Value " + attemptID + " for parameter ReceiveRequestAttemptId is invalid. Reason: The receiveRequestAttemptId is not valid anymore since the receive call is not retryable.", 400}
 		}
+		body, failure := m.openBody(q.bodyCipher)
+		if failure != nil {
+			return nil, failure
+		}
+		messages = append(messages, m.delivery(body, systemAttributes, requestedAttributes))
 	}
 	attempt.deadline = now.Add(timeout)
 	q.attempts[attemptID] = attempt
-	messages := make([]delivery, 0, len(attempt.receipts))
 	for _, receipt := range attempt.receipts {
-		m := q.receipts[receipt]
-		m.visibleAt = attempt.deadline
-		messages = append(messages, m.delivery(systemAttributes, requestedAttributes))
+		q.receipts[receipt].visibleAt = attempt.deadline
 	}
 	q.signal()
 	return messages, nil
