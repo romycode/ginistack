@@ -97,6 +97,8 @@ func (c queueConfig) withAttributes(name string, attributes map[string]string, c
 				return c, invalidQueueAttribute(key)
 			}
 			c.throughputLimit = value
+		case "Policy":
+			// The store validates and applies the resource policy alongside the queue configuration.
 		case "RedriveAllowPolicy":
 			policy, failure := parseRedriveAllow(value)
 			if failure != nil {
@@ -183,7 +185,7 @@ func (c queueConfig) changedAttribute(next queueConfig) string {
 
 func knownQueueAttribute(key string) bool {
 	switch key {
-	case "Policy", "KmsMasterKeyId", "KmsDataKeyReusePeriodSeconds", "SqsManagedSseEnabled", "CreatedTimestamp", "LastModifiedTimestamp":
+	case "KmsMasterKeyId", "KmsDataKeyReusePeriodSeconds", "SqsManagedSseEnabled", "CreatedTimestamp", "LastModifiedTimestamp":
 		return true
 	}
 	return false
@@ -222,6 +224,14 @@ func (s *store) configure(name queueKey, attributes map[string]string) *apiError
 	if failure := s.validateRedrive(q.arn, config, attributes["RedrivePolicy"], attributes["RedriveAllowPolicy"]); failure != nil {
 		return failure
 	}
+	accessPolicy := q.accessPolicy
+	if raw, present := attributes["Policy"]; present {
+		var failure *apiError
+		accessPolicy, failure = parseQueuePolicy(raw)
+		if failure != nil {
+			return failure
+		}
+	}
 	if q.fifo && config.delay != q.delay {
 		for _, message := range q.messages {
 			if message.receiveCount == 0 {
@@ -230,6 +240,7 @@ func (s *store) configure(name queueKey, attributes map[string]string) *apiError
 		}
 	}
 	q.queueConfig = config
+	q.accessPolicy = accessPolicy
 	q.signal()
 	return nil
 }

@@ -11,6 +11,7 @@ import (
 
 const accountID = "000000000000"
 const localUserID = "AIDAGINISTACKLOCAL0000"
+const localUserARN = "arn:aws:iam::" + accountID + ":user/ginistack-local"
 
 var queueNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)
 
@@ -170,7 +171,7 @@ func (s *service) sendMessage(request *http.Request, input sendInput) (sendOutpu
 	if failure != nil {
 		return sendOutput{}, failure
 	}
-	return s.store.send(name, input.messageInput)
+	return s.store.send(name, input.messageInput, request.TLS != nil)
 }
 
 const maxMessageSize = 1 << 20

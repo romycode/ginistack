@@ -42,6 +42,8 @@ func NewHandler() http.Handler {
 	r.register("CancelMessageMoveTask", api.cancelMessageMove)
 	r.register("GetQueueAttributes", api.getQueueAttributes)
 	r.register("SetQueueAttributes", api.setQueueAttributes)
+	r.register("AddPermission", api.addPermission)
+	r.register("RemovePermission", api.removePermission)
 	r.register("ListQueueTags", api.listQueueTags)
 	r.register("TagQueue", api.tagQueue)
 	r.register("UntagQueue", api.untagQueue)

@@ -61,6 +61,9 @@ func (s *service) sendMessageBatch(request *http.Request, input batchInput[sendB
 			fmt.Sprintf("Batch requests cannot be longer than %d bytes. You have sent %d bytes.", maxMessageSize, total))
 	}
 	return s.runBatch(request, "SendMessageBatch", input, func(q *queue) *apiError {
+		if failure := q.checkSendPolicy(request.TLS != nil); failure != nil {
+			return failure
+		}
 		for index, entry := range input.Entries {
 			if q.fifo && entry.MessageBody == "" {
 				return &apiError{"InvalidParameterValue", fmt.Sprintf("No Value Found for SendMessageBatchRequestEntry.%d.MessageBody.", index+1), 400}

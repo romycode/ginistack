@@ -44,6 +44,16 @@ done
 curl -fsS --max-time 1 "http://$addr/healthz" >/dev/null
 
 checks=(
+  add_remove_permission
+  add_remove_permission_updates_policy
+  add_permission_invalid_action_rejected
+  add_permission_over_limit_rejected
+  remove_permission_nonexistent_label_rejected
+  op_tag_and_permission_validation_rejected
+  create_queue_existing_name_different_policy_not_conflicting
+  queue_policy_attribute_normalizes_principal_and_clears
+  set_queue_attributes_invalid_policy_json_rejected
+  queue_policy_explicit_deny_blocks_send
   send_message_malformed_awstraceheader_accepted_then_dropped
   sender_id_and_sent_timestamp_derive_from_the_caller_and_the_live_clock
   send_receive_delete_lifecycle

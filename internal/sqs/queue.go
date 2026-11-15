@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/romycode/ginistack/internal/policy"
 )
 
 type store struct {
@@ -29,6 +31,7 @@ type deletedIncarnation struct {
 
 type queue struct {
 	queueConfig
+	accessPolicy    *policy.Document
 	key             queueKey
 	incarnation     string
 	deletedReceipts map[string]time.Time
@@ -112,6 +115,10 @@ func (s *store) create(name queueKey, arn string, attributes, tags map[string]st
 	if failure := validateQueueTags(name.name, tags); failure != nil {
 		return failure
 	}
+	accessPolicy, failure := parseQueuePolicy(attributes["Policy"])
+	if failure != nil {
+		return failure
+	}
 	if q := s.queues[name]; q != nil {
 		config, failure := q.queueConfig.withAttributes(name.name, attributes, true)
 		if failure != nil {
@@ -119,6 +126,9 @@ func (s *store) create(name queueKey, arn string, attributes, tags map[string]st
 		}
 		if attribute := q.queueConfig.changedAttribute(config); attribute != "" {
 			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for attribute " + attribute, 400}
+		}
+		if _, present := attributes["Policy"]; present && !policy.EquivalentIgnoringSIDs(q.accessPolicy, accessPolicy) {
+			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for attribute Policy", 400}
 		}
 		if len(tags) != 0 && !maps.Equal(q.tags, tags) {
 			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for tags ", 400}
@@ -134,6 +144,7 @@ func (s *store) create(name queueKey, arn string, attributes, tags map[string]st
 	}
 	s.queues[name] = &queue{
 		queueConfig:     config,
+		accessPolicy:    accessPolicy,
 		key:             name,
 		incarnation:     token(),
 		arn:             arn,
@@ -182,6 +193,10 @@ func (s *store) queueAttributes(name queueKey, requested []string) (map[string]s
 	all["QueueArn"] = q.arn
 	all["DelaySeconds"] = strconv.Itoa(int(q.delay / time.Second))
 	all["MessageRetentionPeriod"] = strconv.Itoa(int(q.retention / time.Second))
+	if q.accessPolicy != nil {
+		raw, _ := json.Marshal(q.accessPolicy)
+		all["Policy"] = string(raw)
+	}
 	if q.fifo {
 		all["FifoQueue"] = "true"
 		all["ContentBasedDeduplication"] = strconv.FormatBool(q.contentDedup)
@@ -221,7 +236,7 @@ func (s *store) queueAttributes(name queueKey, requested []string) (map[string]s
 			continue
 		}
 		value, exists := all[key]
-		if !exists && (key == "RedrivePolicy" || key == "RedriveAllowPolicy") {
+		if !exists && (key == "RedrivePolicy" || key == "RedriveAllowPolicy" || key == "Policy") {
 			continue
 		}
 		if !exists {
@@ -246,12 +261,15 @@ func (s *store) queueTags(name queueKey) (map[string]string, *apiError) {
 	return q.tags, nil
 }
 
-func (s *store) send(name queueKey, input messageInput) (sendOutput, *apiError) {
+func (s *store) send(name queueKey, input messageInput, secureTransport bool) (sendOutput, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
 	if q == nil {
 		return sendOutput{}, missingQueue
+	}
+	if failure := q.checkSendPolicy(secureTransport); failure != nil {
+		return sendOutput{}, failure
 	}
 	return q.send(input)
 }
