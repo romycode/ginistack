@@ -81,7 +81,9 @@ workers=6
 timeout_args=()
 if [[ $mode == "--all-sqs" ]]; then
   workers=20
-  timeout_args=(--timeout "${GINISTACK_CASE_TIMEOUT:-45}")
+  if [[ -n ${GINISTACK_CASE_TIMEOUT:-} ]]; then
+    timeout_args=(--timeout "$GINISTACK_CASE_TIMEOUT")
+  fi
   checks=()
   for path in "$suite"/behavioral/sqs/check_*.py; do
     check=${path##*/check_}
