@@ -28,8 +28,9 @@ aws sqs receive-message --queue-url "$queue_url" --wait-time-seconds 2
 - Orden FIFO por grupo, deduplicación explícita o por contenido durante cinco minutos y repetición de recepciones mediante `ReceiveRequestAttemptId`.
 - Traslado de mensajes a una DLQ del mismo tipo al intentar superar el límite de recepciones del origen. Se conservan el identificador, cuerpo, atributos personalizados y cabecera de trazas. Las políticas de redrive controlan qué orígenes pueden usar la DLQ. Las tareas de devolución se pueden iniciar, listar y cancelar.
 - Atributos de mensaje `String`, `Number` y `Binary`, con MD5 y selección por nombre o prefijo en recepción.
+- Políticas de cola con lectura, edición y borrado mediante `Policy`. `AddPermission` y `RemovePermission` modifican el mismo documento por `Sid`. El evaluador de `internal/policy` aplica un `Deny` explícito a `SendMessage` y `SendMessageBatch` para el principal local.
 
-El estado se guarda en memoria y se pierde al detener el proceso. Se usa una cuenta local fija y el servidor acepta credenciales de prueba sin verificar SigV4. Las políticas de acceso a colas y las integraciones con IAM, KMS, CloudFormation y CloudWatch quedan pendientes.
+El estado se guarda en memoria y se pierde al detener el proceso. Se usa una cuenta local fija y el servidor acepta credenciales de prueba sin verificar SigV4. Quedan pendientes las políticas de identidad de IAM, la autorización de otras operaciones y las integraciones con KMS, CloudFormation y CloudWatch.
 
 ## Pruebas oficiales de AWS
 
@@ -64,7 +65,7 @@ La ejecución del 15 de noviembre de 2026 probó Ginistack `3080be3` con Go 1.27
 
 El único caso que agotó su presupuesto oficial de 60 segundos verifica un recibo de una cola borrada y recreada. Pasó en **63 segundos** con un presupuesto ampliado, lo que da **255 de 306** si se incluye esa repetición.
 
-Tras esa pasada se añadieron a la regresión dos casos aprobados sobre `AWSTraceHeader` y la correspondencia entre `SenderId` y el `UserId` del principal local de STS. La selección actual pasa **47 de 47**. La tabla conserva el resultado de la última ejecución completa.
+Tras esa pasada se añadieron a la regresión dos casos sobre `AWSTraceHeader` y la correspondencia entre `SenderId` y el `UserId` del principal local de STS, además de diez casos sobre permisos y políticas de cola. La selección actual pasa **57 de 57**. La tabla conserva el resultado de la última ejecución completa.
 
 | Área | Casos que pasaron | Compatibilidad pendiente |
 | --- | --- | --- |
@@ -72,4 +73,4 @@ Tras esa pasada se añadieron a la regresión dos casos aprobados sobre `AWSTrac
 | Protocolos | Los clientes Query/XML y JSON comparten estado. Pasaron los casos de envío, recepción y errores XML ejercitados por la suite. | Quedan casos de interoperabilidad que usan IAM y Lambda. |
 | DLQ | Traslado al superar el máximo de recepciones, políticas de redrive, listado de orígenes y devolución y cancelación de tareas. | Casos de configuración desde CloudFormation o asociados a una clave KMS. |
 | Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. Las trazas válidas se conservan, las vacías se rechazan y las de tipo o formato inválido se descartan al entregar. | |
-| Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`. | Políticas de cola, permisos, IAM, KMS, Lambda, CloudFormation y CloudWatch. |
+| Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`, gestión de políticas de cola y permisos por `Sid`. Un `Deny` explícito bloquea el envío. | Evaluación de políticas de identidad y autorización de otras operaciones. El caso oficial de límites de políticas requiere crear usuarios en IAM. Quedan KMS, Lambda, CloudFormation y CloudWatch. |

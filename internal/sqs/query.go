@@ -65,7 +65,7 @@ func writeCallerIdentity(w http.ResponseWriter) {
 		RequestID string   `xml:"ResponseMetadata>RequestId"`
 	}
 	_ = xml.NewEncoder(w).Encode(identity{
-		Account: accountID, ARN: "arn:aws:iam::" + accountID + ":user/ginistack-local",
+		Account: accountID, ARN: localUserARN,
 		UserID: localUserID, RequestID: w.Header().Get("x-amzn-RequestId"),
 	})
 }
@@ -116,10 +116,13 @@ func queryInput(values url.Values, action string) (map[string]any, error) {
 			}
 			field := prefix + "s"
 			result[field] = attr
-		case "AttributeName", "MessageAttributeName", "MessageSystemAttributeName", "TagKey":
+		case "AttributeName", "MessageAttributeName", "MessageSystemAttributeName", "TagKey", "AWSAccountId", "ActionName":
 			values := make([]string, 0, len(rows))
 			for _, row := range rows {
 				values = append(values, row.Get(""))
+			}
+			if prefix == "ActionName" {
+				prefix = "Action"
 			}
 			result[prefix+"s"] = values
 		default:
@@ -200,7 +203,7 @@ func writeQueryResult(w http.ResponseWriter, action string, output any) {
 	encoder := xml.NewEncoder(w)
 	root := xml.StartElement{Name: xml.Name{Local: action + "Response"}, Attr: []xml.Attr{{Name: xml.Name{Local: "xmlns"}, Value: queryNamespace}}}
 	_ = encoder.EncodeToken(root)
-	if action != "DeleteQueue" && action != "DeleteMessage" && action != "ChangeMessageVisibility" && action != "PurgeQueue" && action != "TagQueue" && action != "UntagQueue" && action != "SetQueueAttributes" {
+	if action != "DeleteQueue" && action != "DeleteMessage" && action != "ChangeMessageVisibility" && action != "PurgeQueue" && action != "TagQueue" && action != "UntagQueue" && action != "SetQueueAttributes" && action != "AddPermission" && action != "RemovePermission" {
 		encodeQueryField(encoder, action, action+"Result", fields)
 	}
 	encodeQueryField(encoder, action, "ResponseMetadata", map[string]any{"RequestId": w.Header().Get("x-amzn-RequestId")})
