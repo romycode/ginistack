@@ -51,25 +51,23 @@ Para cubrir los casos de línea de comandos, instala AWS CLI v2 y déjala dispon
 
 ### Resultados de SQS
 
-La ejecución del 15 de noviembre de 2026 probó Ginistack `460e03d` con Go 1.27.4, AWS CLI v2.40.3 y la [suite oficial de AWS en la revisión `4df2823`](https://github.com/aws/aws-emulator-evaluation-suite/tree/4df2823bafface2ada35f482c07ff6668cc078e1). Pasaron **142 de 306 casos (46,4 %)**, incluidos los **31 de la selección de regresión**.
+La ejecución del 15 de noviembre de 2026 probó Ginistack `3080be3` con Go 1.27.4, AWS CLI v2.40.3 y la [suite oficial de AWS en la revisión `4df2823`](https://github.com/aws/aws-emulator-evaluation-suite/tree/4df2823bafface2ada35f482c07ff6668cc078e1). Pasaron **254 de 306 casos (83,0 %)**, incluidos los **45 de la selección de regresión**. Pasaron 112 casos más y se conservaron los 142 aprobados de la referencia.
 
-| Resultado del runner | Pasada inicial · 45 s, sin AWS CLI | Pasada con AWS CLI y tiempos oficiales |
+| Resultado del runner | Referencia | Pasada actual |
 | --- | ---: | ---: |
-| Aprobado | 132 | 142 |
-| Comprobación fallida | 60 | 58 |
-| Sin implementar | 53 | 54 |
-| Error de la API | 49 | 50 |
-| Tiempo agotado | 8 | 2 |
-| Herramienta ausente | 4 | 0 |
+| Aprobado | 142 | 254 |
+| Comprobación fallida | 58 | 4 |
+| Sin implementar | 54 | 39 |
+| Error de la API | 50 | 8 |
+| Tiempo agotado | 2 | 1 |
 | **Total** | **306** | **306** |
 
-El emulador era el mismo en ambas pasadas. Con AWS CLI disponible pasaron tres pruebas que dependían de ella. Con los tiempos oficiales también pasaron seis casos que antes agotaban su plazo, incluida la retención en DLQ, y se verificó que un ID FIFO se puede reutilizar después de que venza la ventana de deduplicación de cinco minutos.
-
-Quedaron dos casos con el tiempo agotado. Uno comprueba que cambiar el retraso de una cola afecta de forma distinta a los mensajes ya encolados en FIFO y en estándar. El otro verifica el ciclo de un mensaje y el error de la API después de borrar su cola.
+El único caso que agotó su presupuesto oficial de 60 segundos verifica un recibo de una cola borrada y recreada. Pasó en **63 segundos** con un presupuesto ampliado, lo que da **255 de 306** si se incluye esa repetición.
 
 | Área | Casos que pasaron | Compatibilidad pendiente |
 | --- | --- | --- |
-| Colas estándar | Crear, enviar, recibir y borrar. *Long polling*, reentrega por visibilidad y fallos parciales en operaciones por lotes. | `ListQueues`, `PurgeQueue`, gestión de etiquetas y coincidencia de varios errores de la API. |
-| FIFO | Orden por grupo con receptores concurrentes, deduplicación por ID y por contenido, aislamiento entre grupos y repetición de una recepción con `ReceiveRequestAttemptId`. | Rechazo de lotes FIFO con ciertas entradas inválidas y rechazo del reintento tras modificar el lote original. |
-| DLQ | Traslado automático tras alcanzar el límite de recepciones y conservación de ID, cuerpo, atributos y trazas. El traslado también desbloquea el grupo FIFO de origen. | Devolución de mensajes desde la DLQ, políticas `RedriveAllowPolicy`, listado de colas de origen y aislamiento entre regiones. |
-| Atributos de mensaje | Ida y vuelta de `String`, `Number` y `Binary`, cálculo del MD5 y selección por nombre o prefijo. | Validación estricta de nombres, tipos y valores numéricos. |
+| Colas estándar y FIFO | Ciclo de mensajes, retraso y visibilidad, paginación, vaciado, etiquetas, aislamiento regional, deduplicación y reintentos FIFO. | Respuesta HTTP para cargas grandes y atributo del sistema `SenderId`. |
+| Protocolos | Los clientes Query/XML y JSON comparten estado. Pasaron los casos de envío, recepción y errores XML ejercitados por la suite. | Quedan casos de interoperabilidad que usan IAM y Lambda. |
+| DLQ | Traslado al superar el máximo de recepciones, políticas de redrive, listado de orígenes y devolución y cancelación de tareas. | Casos de configuración desde CloudFormation o asociados a una clave KMS. |
+| Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. | El tratamiento de algunas cabeceras `AWSTraceHeader` malformadas. |
+| Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`. | Políticas de cola, permisos, IAM, KMS, Lambda, CloudFormation y CloudWatch. |
