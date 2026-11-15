@@ -17,7 +17,6 @@ import (
 const queryNamespace = "http://queue.amazonaws.com/doc/2012-11-05/"
 
 func (r *router) serveQuery(w http.ResponseWriter, request *http.Request) {
-	request.Body = http.MaxBytesReader(w, request.Body, maxRequestBody)
 	if request.ParseForm() != nil {
 		writeQueryError(w, &apiError{"InvalidParameterValue", "Invalid AWS Query form.", 400})
 		return
