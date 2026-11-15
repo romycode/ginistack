@@ -51,7 +51,7 @@ type batchOutput[Result any] struct {
 	Failed     []batchFailure
 }
 
-func (s *service) sendMessageBatch(_ *http.Request, input batchInput[sendBatchEntry]) (batchOutput[sendBatchResult], *apiError) {
+func (s *service) sendMessageBatch(request *http.Request, input batchInput[sendBatchEntry]) (batchOutput[sendBatchResult], *apiError) {
 	total := 0
 	for _, entry := range input.Entries {
 		total += len(entry.MessageBody) + attributeSize(entry.MessageAttributes)
@@ -60,9 +60,12 @@ func (s *service) sendMessageBatch(_ *http.Request, input batchInput[sendBatchEn
 		return batchOutput[sendBatchResult]{}, batchRequestError("BatchRequestTooLong",
 			fmt.Sprintf("Batch requests cannot be longer than %d bytes. You have sent %d bytes.", maxMessageSize, total))
 	}
-	return s.runBatch("SendMessageBatch", input, func(q *queue) *apiError {
-		for _, entry := range input.Entries {
-			if failure := q.validateFIFO(entry.messageInput); failure != nil {
+	return s.runBatch(request, "SendMessageBatch", input, func(q *queue) *apiError {
+		for index, entry := range input.Entries {
+			if q.fifo && entry.MessageBody == "" {
+				return &apiError{"InvalidParameterValue", fmt.Sprintf("No Value Found for SendMessageBatchRequestEntry.%d.MessageBody.", index+1), 400}
+			}
+			if failure := q.validateFIFO(entry.messageInput); failure != nil && q.fifo {
 				if failure.code == "MissingParameter" {
 					return &apiError{"InvalidParameterValue", failure.message, failure.status}
 				}
@@ -75,6 +78,10 @@ func (s *service) sendMessageBatch(_ *http.Request, input batchInput[sendBatchEn
 			return sendBatchResult{}, &apiError{"EmptyValue",
 				fmt.Sprintf("No Value Found for SendMessageBatchRequestEntry.%d.MessageBody.", index+1), 400}
 		}
+		if len(entry.MessageBody)+attributeSize(entry.MessageAttributes) > q.maximumSize {
+			return sendBatchResult{}, &apiError{"InvalidParameterValue",
+				fmt.Sprintf("One or more parameters cannot be validated. Reason: Message must be shorter than %d bytes.", q.maximumSize), 400}
+		}
 		output, failure := q.send(entry.messageInput)
 		if failure != nil {
 			return sendBatchResult{}, failure
@@ -83,20 +90,17 @@ func (s *service) sendMessageBatch(_ *http.Request, input batchInput[sendBatchEn
 	})
 }
 
-func (s *service) deleteMessageBatch(_ *http.Request, input batchInput[receiptBatchEntry]) (batchOutput[batchID], *apiError) {
+func (s *service) deleteMessageBatch(request *http.Request, input batchInput[receiptBatchEntry]) (batchOutput[batchID], *apiError) {
 	deleted := make(map[string]struct{})
-	return s.runBatch("DeleteMessageBatch", input, nil, func(q *queue, _ int, entry receiptBatchEntry) (batchID, *apiError) {
+	return s.runBatch(request, "DeleteMessageBatch", input, nil, func(q *queue, _ int, entry receiptBatchEntry) (batchID, *apiError) {
 		receipt := entry.ReceiptHandle
 		if _, handled := deleted[receipt]; handled {
 			return entry.batchID, nil
 		}
+		if failure := s.store.foreignReceipt(q, receipt); failure != nil {
+			return entry.batchID, failure
+		}
 		if failure := q.deleteMessage(receipt); failure != nil {
-			for _, other := range s.store.queues {
-				if other != q && other.receipts[receipt] != nil {
-					return entry.batchID, &apiError{"ReceiptHandleIsInvalid",
-						fmt.Sprintf("The receipt handle %q is not valid for this queue.", receipt), 400}
-				}
-			}
 			return entry.batchID, failure
 		}
 		deleted[receipt] = struct{}{}
@@ -104,9 +108,9 @@ func (s *service) deleteMessageBatch(_ *http.Request, input batchInput[receiptBa
 	})
 }
 
-func (s *service) changeMessageVisibilityBatch(_ *http.Request, input batchInput[visibilityBatchEntry]) (batchOutput[batchID], *apiError) {
+func (s *service) changeMessageVisibilityBatch(request *http.Request, input batchInput[visibilityBatchEntry]) (batchOutput[batchID], *apiError) {
 	updated := make(map[string]*message)
-	return s.runBatch("ChangeMessageVisibilityBatch", input, nil, func(q *queue, _ int, entry visibilityBatchEntry) (batchID, *apiError) {
+	return s.runBatch(request, "ChangeMessageVisibilityBatch", input, nil, func(q *queue, _ int, entry visibilityBatchEntry) (batchID, *apiError) {
 		if entry.VisibilityTimeout == nil {
 			return entry.batchID, missingParameter("VisibilityTimeout")
 		}
@@ -119,6 +123,9 @@ func (s *service) changeMessageVisibilityBatch(_ *http.Request, input batchInput
 			q.updateVisibility(m, time.Now().Add(timeout))
 			return entry.batchID, nil
 		}
+		if failure := s.store.foreignReceipt(q, receipt); failure != nil {
+			return entry.batchID, failure
+		}
 		if failure := q.changeVisibility(receipt, timeout); failure != nil {
 			return entry.batchID, failure
 		}
@@ -130,12 +137,12 @@ func (s *service) changeMessageVisibilityBatch(_ *http.Request, input batchInput
 // runBatch validates the request before applying any entry. It holds the store
 // lock so queue deletion or recreation cannot redirect entries mid-request.
 func (s *service) runBatch[Entry interface{ id() string }, Result any](
-	operation string, input batchInput[Entry], preflight func(*queue) *apiError, apply func(*queue, int, Entry) (Result, *apiError),
+	request *http.Request, operation string, input batchInput[Entry], preflight func(*queue) *apiError, apply func(*queue, int, Entry) (Result, *apiError),
 ) (batchOutput[Result], *apiError) {
 	if failure := validateBatch(operation, input.Entries); failure != nil {
 		return batchOutput[Result]{}, failure
 	}
-	name, failure := queueName(input.queueInput)
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return batchOutput[Result]{}, failure
 	}

@@ -6,28 +6,42 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 type store struct {
-	mu     sync.Mutex
-	queues map[string]*queue
+	mu           sync.Mutex
+	queues       map[queueKey]*queue
+	deleted      map[queueKey]time.Time
+	incarnations map[string]deletedIncarnation
+}
+
+type deletedIncarnation struct {
+	key     queueKey
+	expires time.Time
 }
 
 type queue struct {
 	queueConfig
-	arn      string
-	dedup    map[dedupKey]dedupRecord
-	attempts map[string]receiveAttempt
-	sequence uint64
-	tags     map[string]string
-	messages []*message
-	receipts map[string]*message
-	changed  chan struct{}
+	key             queueKey
+	incarnation     string
+	deletedReceipts map[string]time.Time
+	arn             string
+	lastPurge       time.Time
+	dedup           map[dedupKey]dedupRecord
+	attempts        map[string]receiveAttempt
+	sequence        uint64
+	tags            map[string]string
+	messages        []*message
+	moves           []*moveTask
+	receipts        map[string]*message
+	changed         chan struct{}
 }
 
 type message struct {
@@ -38,6 +52,7 @@ type message struct {
 	sentAt           time.Time
 	retentionFrom    time.Time
 	firstReadAt      time.Time
+	lastReadAt       time.Time
 	receiveCount     int
 	receipt          string
 	receipts         []string
@@ -76,44 +91,82 @@ func (q *queue) signal() {
 	q.changed = make(chan struct{})
 }
 
-func (s *store) create(name, arn string, config queueConfig, tags map[string]string, rawRedrive string) *apiError {
+func (s *store) create(name queueKey, arn string, attributes, tags map[string]string) *apiError {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	for key, until := range s.deleted {
+		if !now.Before(until) {
+			delete(s.deleted, key)
+		}
+	}
+	for id, entry := range s.incarnations {
+		if !now.Before(entry.expires) {
+			delete(s.incarnations, id)
+		}
+	}
+	if _, deleted := s.deleted[name]; deleted {
+		return &apiError{"AWS.SimpleQueueService.QueueDeletedRecently", "You must wait 60 seconds after deleting a queue before you can create another with the same name.", 400}
+	}
+	if failure := validateQueueTags(name.name, tags); failure != nil {
+		return failure
+	}
 	if q := s.queues[name]; q != nil {
-		if q.queueConfig != config {
-			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for one of its attributes.", 400}
+		config, failure := q.queueConfig.withAttributes(name.name, attributes, true)
+		if failure != nil {
+			return failure
+		}
+		if attribute := q.queueConfig.changedAttribute(config); attribute != "" {
+			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for attribute " + attribute, 400}
 		}
 		if len(tags) != 0 && !maps.Equal(q.tags, tags) {
 			return &apiError{"QueueAlreadyExists", "A queue already exists with the same name and a different value for tags ", 400}
 		}
 		return nil
 	}
-	if failure := s.validateRedrive(arn, config, rawRedrive); failure != nil {
+	config, failure := newQueueConfig(name.name, attributes)
+	if failure != nil {
+		return failure
+	}
+	if failure := s.validateRedrive(arn, config, attributes["RedrivePolicy"], attributes["RedriveAllowPolicy"]); failure != nil {
 		return failure
 	}
 	s.queues[name] = &queue{
-		queueConfig: config,
-		arn:         arn,
-		dedup:       make(map[dedupKey]dedupRecord),
-		attempts:    make(map[string]receiveAttempt),
-		tags:        tags,
-		receipts:    make(map[string]*message),
-		changed:     make(chan struct{}),
+		queueConfig:     config,
+		key:             name,
+		incarnation:     token(),
+		arn:             arn,
+		dedup:           make(map[dedupKey]dedupRecord),
+		attempts:        make(map[string]receiveAttempt),
+		tags:            tags,
+		receipts:        make(map[string]*message),
+		deletedReceipts: make(map[string]time.Time),
+		changed:         make(chan struct{}),
 	}
 	return nil
 }
 
-func (s *store) remove(name string) *apiError {
+func (s *store) remove(name queueKey) *apiError {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if q := s.queues[name]; q != nil {
 		delete(s.queues, name)
+		for _, task := range q.moves {
+			if task.Status == moveRunning {
+				task.Status = "CANCELLED"
+				close(task.stop)
+			}
+		}
+		now := time.Now()
+		s.deleted[name] = now.Add(time.Minute)
+		s.incarnations[q.incarnation] = deletedIncarnation{key: name, expires: now.Add(12 * time.Hour)}
 		q.signal()
+		return nil
 	}
-	return nil
+	return missingQueue
 }
 
-func (s *store) queueAttributes(name string, requested []string) (map[string]string, *apiError) {
+func (s *store) queueAttributes(name queueKey, requested []string) (map[string]string, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
@@ -121,7 +174,7 @@ func (s *store) queueAttributes(name string, requested []string) (map[string]str
 		return nil, missingQueue
 	}
 	all := map[string]string{
-		"MaximumMessageSize":            strconv.Itoa(maxMessageSize),
+		"MaximumMessageSize":            strconv.Itoa(q.maximumSize),
 		"VisibilityTimeout":             strconv.Itoa(int(q.visibility / time.Second)),
 		"ReceiveMessageWaitTimeSeconds": strconv.Itoa(int(q.wait / time.Second)),
 	}
@@ -136,6 +189,9 @@ func (s *store) queueAttributes(name string, requested []string) (map[string]str
 	} else {
 		all["DeduplicationScope"] = "queue"
 		all["FifoThroughputLimit"] = "perQueue"
+	}
+	if q.redriveAllow.permission != "" {
+		all["RedriveAllowPolicy"] = q.redriveAllow.json()
 	}
 	if q.redrive.TargetARN != "" {
 		payload, _ := json.Marshal(q.redrive)
@@ -164,29 +220,32 @@ func (s *store) queueAttributes(name string, requested []string) (map[string]str
 			continue
 		}
 		value, exists := all[key]
-		if !exists && key == "RedrivePolicy" {
+		if !exists && (key == "RedrivePolicy" || key == "RedriveAllowPolicy") {
 			continue
 		}
 		if !exists {
-			return nil, notImplemented
+			if knownQueueAttribute(key) {
+				return nil, notImplemented
+			}
+			return nil, unknownQueueAttribute(key)
 		}
 		attributes[key] = value
 	}
 	return attributes, nil
 }
 
-func (s *store) queueTags(name string) (map[string]string, *apiError) {
+func (s *store) queueTags(name queueKey) (map[string]string, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
 	if q == nil {
 		return nil, missingQueue
 	}
-	// Tags are immutable after creation.
+	// Tag mutations replace the map under the store lock.
 	return q.tags, nil
 }
 
-func (s *store) send(name string, input messageInput) (sendOutput, *apiError) {
+func (s *store) send(name queueKey, input messageInput) (sendOutput, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
@@ -206,22 +265,23 @@ func (q *queue) send(input messageInput) (sendOutput, *apiError) {
 	if failure := validateMessageAttributes(input.MessageAttributes); failure != nil {
 		return sendOutput{}, failure
 	}
-	if len(input.MessageBody)+attributeSize(input.MessageAttributes) > maxMessageSize {
-		return sendOutput{}, &apiError{"InvalidParameterValue", "Message exceeds the maximum size.", 400}
+	if len(input.MessageBody)+attributeSize(input.MessageAttributes) > q.maximumSize {
+		return sendOutput{}, &apiError{"InvalidParameterValue", fmt.Sprintf("One or more parameters are invalid. Reason: Message must be shorter than %d bytes.", q.maximumSize), 400}
 	}
-	trace := input.MessageSystemAttributes["AWSTraceHeader"]
-	if len(input.MessageSystemAttributes) != 0 && (len(input.MessageSystemAttributes) != 1 || trace.StringValue == nil || trace.DataType != "String") {
-		return sendOutput{}, &apiError{"InvalidParameterValue", "Invalid message system attributes.", 400}
+	trace, failure := messageTraceHeader(input.MessageSystemAttributes)
+	if failure != nil {
+		return sendOutput{}, failure
 	}
 	now := time.Now()
 	m := &message{
 		id: token(), body: input.MessageBody, md5: checksum(input.MessageBody),
 		sentAt: now, retentionFrom: now, visibleAt: now.Add(durationOrDefault(input.DelaySeconds, q.delay)),
-		groupID: input.MessageGroupID, customAttributes: input.MessageAttributes,
+		customAttributes: input.MessageAttributes,
 	}
-	if trace.StringValue != nil {
-		m.traceHeader = *trace.StringValue
+	if input.MessageGroupID != nil {
+		m.groupID = *input.MessageGroupID
 	}
+	m.traceHeader = trace
 	output := sendOutput{
 		MessageID: m.id, MD5OfMessageBody: m.md5,
 		MD5OfMessageAttributes:       attributeDigest(input.MessageAttributes),
@@ -250,7 +310,7 @@ func (q *queue) send(input messageInput) (sendOutput, *apiError) {
 	return output, nil
 }
 
-func (s *store) receive(ctx context.Context, name string, count int, visibility, wait *int, systemAttributes, requestedAttributes []string, attemptID string) ([]delivery, *apiError) {
+func (s *store) receive(ctx context.Context, name queueKey, count int, visibility, wait *int, systemAttributes, requestedAttributes []string, attemptID string) ([]delivery, *apiError) {
 	s.mu.Lock()
 	q := s.queues[name]
 	if q == nil {
@@ -278,9 +338,10 @@ func (s *store) receive(ctx context.Context, name string, count int, visibility,
 		next := deadline
 		q.expireMessages(now)
 		if attemptID != "" {
-			if messages := q.replay(attemptID, now, timeout, systemAttributes, requestedAttributes); len(messages) != 0 {
+			messages, failure := q.replay(attemptID, now, timeout, systemAttributes, requestedAttributes)
+			if len(messages) != 0 || failure != nil {
 				s.mu.Unlock()
-				return messages, nil
+				return messages, failure
 			}
 		}
 		s.moveDeadLetters(q, now)
@@ -297,11 +358,12 @@ func (s *store) receive(ctx context.Context, name string, count int, visibility,
 				next = nextOrEarlier(next, m.visibleAt)
 				continue
 			}
-			m.receipt = token()
+			m.receipt = q.incarnation + "." + token()
 			m.receipts = append(m.receipts, m.receipt)
 			q.receipts[m.receipt] = m
 			m.visibleAt = now.Add(timeout)
 			m.receiveCount++
+			m.lastReadAt = now
 			if m.receiveCount == 1 {
 				m.firstReadAt = now
 			}
@@ -381,27 +443,62 @@ func nextOrEarlier(next, candidate time.Time) time.Time {
 	return next
 }
 
-func (s *store) deleteMessage(name, receipt string) *apiError {
+func (s *store) deleteMessage(name queueKey, receipt string) *apiError {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
 	if q == nil {
 		return missingQueue
 	}
+	if failure := s.foreignReceipt(q, receipt); failure != nil {
+		return failure
+	}
 	return q.deleteMessage(receipt)
 }
 
+func (s *store) foreignReceipt(queue *queue, receipt string) *apiError {
+	if queue.receipts[receipt] != nil || queue.deletedReceipts[receipt].After(time.Now()) {
+		return nil
+	}
+	if id, _, found := strings.Cut(receipt, "."); found {
+		if entry, exists := s.incarnations[id]; exists && entry.key == queue.key && entry.expires.After(time.Now()) {
+			return missingQueue
+		}
+	}
+	for _, other := range s.queues {
+		if other.key.region == queue.key.region && other != queue && other.receipts[receipt] != nil {
+			return &apiError{"ReceiptHandleIsInvalid", fmt.Sprintf("The receipt handle %q is not valid for this queue.", receipt), 400}
+		}
+	}
+	return nil
+}
+
 func (q *queue) deleteMessage(receipt string) *apiError {
+	now := time.Now()
+	for handle, expiry := range q.deletedReceipts {
+		if !now.Before(expiry) {
+			delete(q.deletedReceipts, handle)
+		}
+	}
 	m := q.receipts[receipt]
 	if m == nil {
+		if q.deletedReceipts[receipt].After(now) {
+			return nil
+		}
 		return invalidReceipt
 	}
 	// SQS accepts an old receipt handle, but may leave the current delivery intact.
 	if m.receipt != receipt {
+		if q.fifo {
+			return expiredReceipt(receipt)
+		}
 		return nil
 	}
 	for i, candidate := range q.messages {
 		if candidate == m {
+			for _, handle := range m.receipts {
+				q.deletedReceipts[handle] = now.Add(12 * time.Hour)
+			}
 			q.removeMessage(i)
 			break
 		}
@@ -429,27 +526,41 @@ func (q *queue) removeMessage(index int) {
 	q.signal()
 }
 
-func (s *store) changeVisibility(name, receipt string, timeout time.Duration) *apiError {
+func (s *store) changeVisibility(name queueKey, receipt string, timeout time.Duration) *apiError {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	q := s.queues[name]
 	if q == nil {
 		return missingQueue
 	}
+	if failure := s.foreignReceipt(q, receipt); failure != nil {
+		return failure
+	}
 	return q.changeVisibility(receipt, timeout)
 }
 
 func (q *queue) changeVisibility(receipt string, timeout time.Duration) *apiError {
+	now := time.Now()
 	m := q.receipts[receipt]
-	if m == nil || m.receipt != receipt {
+	if m == nil {
+		if q.deletedReceipts[receipt].After(now) {
+			return &apiError{"InvalidParameterValue", "Value " + receipt + " for parameter ReceiptHandle is invalid. Reason: Message does not exist or is not available for visibility timeout change.", 400}
+		}
 		return invalidReceipt
 	}
-	now := time.Now()
-	if !now.Before(m.visibleAt) {
-		return &apiError{"MessageNotInflight", "The specified message is not in flight.", 400}
+	if m.receipt != receipt {
+		return expiredReceipt(receipt)
 	}
-	q.updateVisibility(m, now.Add(timeout))
+	deadline := now.Add(timeout)
+	if deadline.After(m.lastReadAt.Add(12 * time.Hour)) {
+		return &apiError{"InvalidParameterValue", fmt.Sprintf("Value %d for parameter VisibilityTimeout is invalid. Reason: Total VisibilityTimeout for the message is beyond the limit [43200 seconds].", int(timeout/time.Second)), 400}
+	}
+	q.updateVisibility(m, deadline)
 	return nil
+}
+
+func expiredReceipt(receipt string) *apiError {
+	return &apiError{"InvalidParameterValue", "Value " + receipt + " for parameter ReceiptHandle is invalid. Reason: The receipt handle has expired.", 400}
 }
 
 func (q *queue) updateVisibility(m *message, deadline time.Time) {

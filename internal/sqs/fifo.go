@@ -20,9 +20,15 @@ type dedupRecord struct {
 
 func (q *queue) validateFIFO(input messageInput) *apiError {
 	if !q.fifo {
+		if input.MessageGroupID != nil && (*input.MessageGroupID == "" || !validFIFOToken(*input.MessageGroupID)) {
+			return invalidFIFOToken("MessageGroupId", *input.MessageGroupID)
+		}
+		if input.MessageDeduplicationID != nil {
+			return &apiError{"InvalidParameterValue", "Value " + *input.MessageDeduplicationID + " for parameter MessageDeduplicationId is invalid. Reason: The request include parameter that is not valid for this queue type.", 400}
+		}
 		return nil
 	}
-	if input.MessageGroupID == "" {
+	if input.MessageGroupID == nil || *input.MessageGroupID == "" {
 		return missingParameter("MessageGroupId")
 	}
 	if input.DelaySeconds != nil && *input.DelaySeconds != 0 {
@@ -31,8 +37,8 @@ func (q *queue) validateFIFO(input messageInput) *apiError {
 	if input.MessageDeduplicationID == nil && !q.contentDedup {
 		return &apiError{"InvalidParameterValue", "The queue should either have ContentBasedDeduplication enabled or MessageDeduplicationId provided explicitly", 400}
 	}
-	if !validFIFOToken(input.MessageGroupID) {
-		return invalidFIFOToken("MessageGroupId", input.MessageGroupID)
+	if !validFIFOToken(*input.MessageGroupID) {
+		return invalidFIFOToken("MessageGroupId", *input.MessageGroupID)
 	}
 	if input.MessageDeduplicationID != nil && (*input.MessageDeduplicationID == "" || !validFIFOToken(*input.MessageDeduplicationID)) {
 		return invalidFIFOToken("MessageDeduplicationId", *input.MessageDeduplicationID)
@@ -67,7 +73,7 @@ func (q *queue) fifoKey(input messageInput) dedupKey {
 		key.id = *input.MessageDeduplicationID
 	}
 	if q.dedupScope == "messageGroup" {
-		key.group = input.MessageGroupID
+		key.group = *input.MessageGroupID
 	}
 	if key.id == "" {
 		digest := sha256.Sum256([]byte(input.MessageBody))
@@ -81,7 +87,7 @@ func (s *store) moveDeadLetters(source *queue, now time.Time) {
 		return
 	}
 	target := s.targetQueue(source.redrive.TargetARN)
-	if target == nil || target == source || target.fifo != source.fifo {
+	if target == nil || target == source || target.fifo != source.fifo || !target.redriveAllow.permits(source.arn) {
 		return
 	}
 	for i := 0; i < len(source.messages); {
@@ -114,7 +120,7 @@ type receiveAttempt struct {
 	receipts []string
 }
 
-func (q *queue) replay(attemptID string, now time.Time, timeout time.Duration, systemAttributes, requestedAttributes []string) []delivery {
+func (q *queue) replay(attemptID string, now time.Time, timeout time.Duration, systemAttributes, requestedAttributes []string) ([]delivery, *apiError) {
 	for id, attempt := range q.attempts {
 		if !now.Before(attempt.expires) {
 			delete(q.attempts, id)
@@ -122,13 +128,12 @@ func (q *queue) replay(attemptID string, now time.Time, timeout time.Duration, s
 	}
 	attempt, exists := q.attempts[attemptID]
 	if !exists {
-		return nil
+		return nil, nil
 	}
 	for _, receipt := range attempt.receipts {
 		m := q.receipts[receipt]
 		if m == nil || m.receipt != receipt || !m.visibleAt.Equal(attempt.deadline) {
-			delete(q.attempts, attemptID)
-			return nil
+			return nil, &apiError{"InvalidParameterValue", "Value " + attemptID + " for parameter ReceiveRequestAttemptId is invalid. Reason: The receiveRequestAttemptId is not valid anymore since the receive call is not retryable.", 400}
 		}
 	}
 	attempt.deadline = now.Add(timeout)
@@ -140,5 +145,5 @@ func (q *queue) replay(attemptID string, now time.Time, timeout time.Duration, s
 		messages = append(messages, m.delivery(systemAttributes, requestedAttributes))
 	}
 	q.signal()
-	return messages
+	return messages, nil
 }

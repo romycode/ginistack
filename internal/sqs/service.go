@@ -14,7 +14,8 @@ const accountID = "000000000000"
 var queueNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)
 
 type service struct {
-	store store
+	store     store
+	cursorKey []byte
 }
 
 type empty struct{}
@@ -23,6 +24,11 @@ type createInput struct {
 	QueueName  string
 	Attributes map[string]string
 	Tags       map[string]string
+}
+
+type queueKey struct {
+	region string
+	name   string
 }
 
 type queueInput struct {
@@ -65,25 +71,26 @@ type changeVisibilityInput struct {
 
 func (s *service) createQueue(request *http.Request, input createInput) (queueInput, *apiError) {
 	if !validQueueName(input.QueueName) {
-		return queueInput{}, &apiError{"InvalidParameterValue", "Invalid queue name.", 400}
+		message := "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length"
+		if input.Attributes["FifoQueue"] == "true" {
+			message = "The name of a FIFO queue can only include alphanumeric characters, hyphens, or underscores, must end with .fifo suffix and be 1 to 80 in length."
+		}
+		return queueInput{}, &apiError{"InvalidParameterValue", message, 400}
 	}
-	config, failure := newQueueConfig(input.QueueName, input.Attributes)
-	if failure != nil {
+	key := queueKey{region: requestRegion(request), name: input.QueueName}
+	arn := "arn:aws:sqs:" + key.region + ":" + accountID + ":" + key.name
+	if failure := s.store.create(key, arn, input.Attributes, input.Tags); failure != nil {
 		return queueInput{}, failure
 	}
-	arn := "arn:aws:sqs:" + requestRegion(request) + ":" + accountID + ":" + input.QueueName
-	if failure := s.store.create(input.QueueName, arn, config, input.Tags, input.Attributes["RedrivePolicy"]); failure != nil {
-		return queueInput{}, failure
-	}
-	return queueAddress(request, input.QueueName), nil
+	return queueAddress(request, key), nil
 }
 
-func queueAddress(request *http.Request, name string) queueInput {
+func queueAddress(request *http.Request, key queueKey) queueInput {
 	scheme := "http"
 	if request.TLS != nil {
 		scheme = "https"
 	}
-	queueURL := url.URL{Scheme: scheme, Host: request.Host, Path: "/" + accountID + "/" + name}
+	queueURL := url.URL{Scheme: scheme, Host: request.Host, Path: "/" + key.region + "/" + accountID + "/" + key.name}
 	return queueInput{QueueURL: queueURL.String()}
 }
 
@@ -95,14 +102,15 @@ type getQueueURLInput struct {
 func (s *service) getQueueURL(request *http.Request, input getQueueURLInput) (queueInput, *apiError) {
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
-	if s.store.queues[input.QueueName] == nil || (input.QueueOwnerAWSAccountID != "" && input.QueueOwnerAWSAccountID != accountID) {
-		return queueInput{}, &apiError{"AWS.SimpleQueueService.NonExistentQueue", missingQueue.message, 400}
+	key := queueKey{region: requestRegion(request), name: input.QueueName}
+	if s.store.queues[key] == nil || (input.QueueOwnerAWSAccountID != "" && input.QueueOwnerAWSAccountID != accountID) {
+		return queueInput{}, missingQueue
 	}
-	return queueAddress(request, input.QueueName), nil
+	return queueAddress(request, key), nil
 }
 
-func (s *service) deleteQueue(_ *http.Request, input queueInput) (empty, *apiError) {
-	name, failure := queueName(input)
+func (s *service) deleteQueue(request *http.Request, input queueInput) (empty, *apiError) {
+	name, failure := queueName(request, input)
 	if failure != nil {
 		return empty{}, failure
 	}
@@ -122,8 +130,8 @@ type listTagsOutput struct {
 	Tags map[string]string `json:",omitempty"`
 }
 
-func (s *service) getQueueAttributes(_ *http.Request, input getAttributesInput) (getAttributesOutput, *apiError) {
-	name, failure := queueName(input.queueInput)
+func (s *service) getQueueAttributes(request *http.Request, input getAttributesInput) (getAttributesOutput, *apiError) {
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return getAttributesOutput{}, failure
 	}
@@ -136,16 +144,19 @@ type setAttributesInput struct {
 	Attributes map[string]string
 }
 
-func (s *service) setQueueAttributes(_ *http.Request, input setAttributesInput) (empty, *apiError) {
-	name, failure := queueName(input.queueInput)
+func (s *service) setQueueAttributes(request *http.Request, input setAttributesInput) (empty, *apiError) {
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return empty{}, failure
+	}
+	if len(input.Attributes) == 0 {
+		return empty{}, missingParameter("Attribute.Name")
 	}
 	return empty{}, s.store.configure(name, input.Attributes)
 }
 
-func (s *service) listQueueTags(_ *http.Request, input queueInput) (listTagsOutput, *apiError) {
-	name, failure := queueName(input)
+func (s *service) listQueueTags(request *http.Request, input queueInput) (listTagsOutput, *apiError) {
+	name, failure := queueName(request, input)
 	if failure != nil {
 		return listTagsOutput{}, failure
 	}
@@ -153,8 +164,8 @@ func (s *service) listQueueTags(_ *http.Request, input queueInput) (listTagsOutp
 	return listTagsOutput{Tags: tags}, failure
 }
 
-func (s *service) sendMessage(_ *http.Request, input sendInput) (sendOutput, *apiError) {
-	name, failure := queueName(input.queueInput)
+func (s *service) sendMessage(request *http.Request, input sendInput) (sendOutput, *apiError) {
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return sendOutput{}, failure
 	}
@@ -164,19 +175,22 @@ func (s *service) sendMessage(_ *http.Request, input sendInput) (sendOutput, *ap
 const maxMessageSize = 1 << 20
 
 func validateMessage(body string, delay *int) *apiError {
-	if len(body) == 0 || len(body) > maxMessageSize {
-		return &apiError{"InvalidParameterValue", "MessageBody must contain between 1 and 1048576 bytes.", 400}
+	if body == "" {
+		return missingParameter("MessageBody")
 	}
 	for _, character := range body {
 		if !validMessageCharacter(character) {
 			return &apiError{"InvalidMessageContents", fmt.Sprintf("Invalid binary character '#x%X' was found in the message body, the set of allowed characters is #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF].", character), 400}
 		}
 	}
-	return validateRange("DelaySeconds", delay, 0, 900)
+	if delay != nil && (*delay < 0 || *delay > 900) {
+		return &apiError{"InvalidParameterValue", fmt.Sprintf("Value %d for parameter DelaySeconds is invalid. Reason: DelaySeconds must be >= 0 and <= 900.", *delay), 400}
+	}
+	return nil
 }
 
 func (s *service) receiveMessage(request *http.Request, input receiveInput) (receiveOutput, *apiError) {
-	name, failure := queueName(input.queueInput)
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return receiveOutput{}, failure
 	}
@@ -202,8 +216,8 @@ type receiveOutput struct {
 	Messages []delivery `json:",omitempty"`
 }
 
-func (s *service) deleteMessage(_ *http.Request, input receiptInput) (empty, *apiError) {
-	name, failure := queueName(input.queueInput)
+func (s *service) deleteMessage(request *http.Request, input receiptInput) (empty, *apiError) {
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return empty{}, failure
 	}
@@ -213,8 +227,8 @@ func (s *service) deleteMessage(_ *http.Request, input receiptInput) (empty, *ap
 	return empty{}, s.store.deleteMessage(name, input.ReceiptHandle)
 }
 
-func (s *service) changeMessageVisibility(_ *http.Request, input changeVisibilityInput) (empty, *apiError) {
-	name, failure := queueName(input.queueInput)
+func (s *service) changeMessageVisibility(request *http.Request, input changeVisibilityInput) (empty, *apiError) {
+	name, failure := queueName(request, input.queueInput)
 	if failure != nil {
 		return empty{}, failure
 	}
@@ -230,19 +244,26 @@ func (s *service) changeMessageVisibility(_ *http.Request, input changeVisibilit
 	return empty{}, s.store.changeVisibility(name, input.ReceiptHandle, durationOrDefault(input.VisibilityTimeout, 0))
 }
 
-func queueName(input queueInput) (string, *apiError) {
+func queueName(request *http.Request, input queueInput) (queueKey, *apiError) {
 	if input.QueueURL == "" {
-		return "", missingParameter("QueueUrl")
+		return queueKey{}, missingParameter("QueueUrl")
 	}
 	parsed, err := url.Parse(input.QueueURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", missingQueue
+		return queueKey{}, missingQueue
 	}
-	path, ok := strings.CutPrefix(parsed.Path, "/"+accountID+"/")
-	if !ok || !validQueueName(path) {
-		return "", missingQueue
+	path := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	region := requestRegion(request)
+	if len(path) == 3 {
+		if path[0] != region {
+			return queueKey{}, missingQueue
+		}
+		path = path[1:]
 	}
-	return path, nil
+	if len(path) != 2 || path[0] != accountID || !validQueueName(path[1]) {
+		return queueKey{}, missingQueue
+	}
+	return queueKey{region: region, name: path[1]}, nil
 }
 
 func missingParameter(name string) *apiError {
@@ -256,6 +277,9 @@ func validateRange(name string, value *int, minimum, maximum int) *apiError {
 	reason := fmt.Sprintf("Must be >= %d and <= %d, if provided.", minimum, maximum)
 	if name == "MaxNumberOfMessages" {
 		reason = "Must be between 1 and 10, if provided."
+	}
+	if name == "VisibilityTimeout" {
+		reason = "VisibilityTimeout must be an integer between 0 and 43200."
 	}
 	return &apiError{"InvalidParameterValue", fmt.Sprintf("Value %d for parameter %s is invalid. Reason: %s", *value, name, reason), 400}
 }
