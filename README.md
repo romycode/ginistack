@@ -48,3 +48,25 @@ Para ejecutar el directorio completo de SQS y ver también qué casos quedan pen
 ```
 
 El modo completo limita cada caso a 45 segundos por defecto. Puedes aumentar ese presupuesto con `GINISTACK_CASE_TIMEOUT` para comprobar casos que requieren esperar varios minutos en tiempo real.
+
+### Resultados de SQS
+
+La ejecución del 15 de noviembre de 2026 probó Ginistack `4bc0cd9` con Go 1.27.4 y la [suite oficial de AWS en la revisión `4df2823`](https://github.com/aws/aws-emulator-evaluation-suite/tree/4df2823bafface2ada35f482c07ff6668cc078e1). Pasaron **132 de 306 casos (43,1 %)**, incluidos los **31 de la selección de regresión**.
+
+| Resultado del runner | Casos | Qué ocurrió |
+| --- | ---: | --- |
+| Aprobado | 132 | Las comprobaciones del caso se cumplieron. |
+| Comprobación fallida | 60 | Hubo diferencias de comportamiento, de código o de texto de error. Un caso que invoca AWS CLI desde un script también quedó en este grupo porque faltaba `aws`. |
+| Sin implementar | 53 | El caso dependía de una operación, un atributo de cola o un servicio aún pendiente. |
+| Error de la API | 49 | Una llamada devolvió un error inesperado. Aquí entran casos de Query y flujos que dependen de IAM, KMS o CloudFormation. |
+| Tiempo agotado | 8 | El caso superó el límite de 45 segundos. |
+| Herramienta ausente | 4 | El runner detectó que faltaba AWS CLI. |
+
+| Área | Casos que pasaron | Compatibilidad pendiente |
+| --- | --- | --- |
+| Colas estándar | Crear, enviar, recibir y borrar. *Long polling*, reentrega por visibilidad y fallos parciales en operaciones por lotes. | `ListQueues`, `PurgeQueue`, gestión de etiquetas y coincidencia de varios errores de la API. |
+| FIFO | Orden por grupo con receptores concurrentes, deduplicación por ID y por contenido, aislamiento entre grupos y repetición de una recepción con `ReceiveRequestAttemptId`. | Rechazo de lotes FIFO con ciertas entradas inválidas y rechazo del reintento tras modificar el lote original. |
+| DLQ | Traslado automático tras alcanzar el límite de recepciones y conservación de ID, cuerpo, atributos y trazas. El traslado también desbloquea el grupo FIFO de origen. | Devolución de mensajes desde la DLQ, políticas `RedriveAllowPolicy`, listado de colas de origen y aislamiento entre regiones. |
+| Atributos de mensaje | Ida y vuelta de `String`, `Number` y `Binary`, cálculo del MD5 y selección por nombre o prefijo. | Validación estricta de nombres, tipos y valores numéricos. |
+
+La prueba de retención en DLQ pasó en **87 segundos** al repetirla con un límite de 110 segundos. Su resultado original sigue en la fila de tiempo agotado. La prueba del vencimiento de la ventana de deduplicación FIFO quedó registrada como fallo, pero requiere observar cinco minutos y la pasada de 45 segundos dejó ese comportamiento sin confirmar.
