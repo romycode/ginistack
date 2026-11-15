@@ -44,6 +44,8 @@ done
 curl -fsS --max-time 1 "http://$addr/healthz" >/dev/null
 
 checks=(
+  send_message_malformed_awstraceheader_accepted_then_dropped
+  sender_id_and_sent_timestamp_derive_from_the_caller_and_the_live_clock
   send_receive_delete_lifecycle
   receive_message_visibility_timeout_override_per_call
   change_message_visibility_zero_makes_immediately_visible

@@ -60,6 +60,7 @@ type message struct {
 	dedupID          string
 	sequence         string
 	sourceARN        string
+	senderID         string
 	traceHeader      string
 	customAttributes map[string]messageAttribute
 }
@@ -276,12 +277,11 @@ func (q *queue) send(input messageInput) (sendOutput, *apiError) {
 	m := &message{
 		id: token(), body: input.MessageBody, md5: checksum(input.MessageBody),
 		sentAt: now, retentionFrom: now, visibleAt: now.Add(durationOrDefault(input.DelaySeconds, q.delay)),
-		customAttributes: input.MessageAttributes,
+		senderID: localUserID, traceHeader: trace, customAttributes: input.MessageAttributes,
 	}
 	if input.MessageGroupID != nil {
 		m.groupID = *input.MessageGroupID
 	}
-	m.traceHeader = trace
 	output := sendOutput{
 		MessageID: m.id, MD5OfMessageBody: m.md5,
 		MD5OfMessageAttributes:       attributeDigest(input.MessageAttributes),
@@ -415,6 +415,7 @@ func (m *message) systemAttributes(requested []string) map[string]string {
 		"ApproximateReceiveCount":          strconv.Itoa(m.receiveCount),
 		"ApproximateFirstReceiveTimestamp": strconv.FormatInt(m.firstReadAt.UnixMilli(), 10),
 		"SentTimestamp":                    strconv.FormatInt(m.sentAt.UnixMilli(), 10),
+		"SenderId":                         m.senderID,
 	}
 	for name, value := range map[string]string{
 		"MessageGroupId": m.groupID, "MessageDeduplicationId": m.dedupID,

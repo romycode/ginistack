@@ -54,8 +54,7 @@ func (r *router) serveQuery(w http.ResponseWriter, request *http.Request) {
 	operation(w, request)
 }
 
-// The local account is fixed across regions, matching the QueueArn and QueueUrl
-// returned by SQS. This endpoint does not emulate STS authentication.
+// This endpoint reports the local principal shared by SQS and STS.
 func writeCallerIdentity(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/xml")
 	type identity struct {
@@ -65,7 +64,10 @@ func writeCallerIdentity(w http.ResponseWriter) {
 		UserID    string   `xml:"GetCallerIdentityResult>UserId"`
 		RequestID string   `xml:"ResponseMetadata>RequestId"`
 	}
-	_ = xml.NewEncoder(w).Encode(identity{Account: accountID, ARN: "arn:aws:iam::" + accountID + ":root", UserID: accountID, RequestID: w.Header().Get("x-amzn-RequestId")})
+	_ = xml.NewEncoder(w).Encode(identity{
+		Account: accountID, ARN: "arn:aws:iam::" + accountID + ":user/ginistack-local",
+		UserID: localUserID, RequestID: w.Header().Get("x-amzn-RequestId"),
+	})
 }
 
 func queryInput(values url.Values, action string) (map[string]any, error) {
