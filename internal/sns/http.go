@@ -121,6 +121,8 @@ func (s *service) execute(region, action string, form url.Values) (any, *apiErro
 		return s.tagOperation(region, action, form)
 	case "Subscribe":
 		return s.subscribe(region, form)
+	case "AddPermission", "RemovePermission":
+		return s.changePermission(region, action, form)
 	case "GetSubscriptionAttributes", "SetSubscriptionAttributes", "Unsubscribe":
 		return s.subscriptionOperation(region, action, form)
 	case "ListSubscriptions", "ListSubscriptionsByTopic":

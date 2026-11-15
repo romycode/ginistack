@@ -130,7 +130,13 @@ elif [[ $mode == "--sns" ]]; then
   service=sns
   checks=(
     sns__sqs/a_message_filtered_out_at_publish_time_is_never_redelivered_when_the_policy_is_relaxed
+    add_permission_invalid_action_rejected
+    add_permission_lifecycle_and_duplicate_label
+    add_permission_malformed_account_id_rejected
+    add_permission_merges_into_custom_policy
+    add_permission_nonexistent_topic_fails
     clearing_a_filter_policy_with_an_empty_value_restores_unfiltered_delivery
+    concurrent_add_permission_distinct_labels_all_retained
     concurrent_create_topic_same_name_converges
     concurrent_tag_resource_distinct_keys_all_retained
     create_topic_idempotent_and_conflict
@@ -138,6 +144,7 @@ elif [[ $mode == "--sns" ]]; then
     create_topic_with_different_tags_rejected
     custom_attribute_type_labels_and_string_array_survive_both_delivery_modes
     delete_topic_cascades_subscriptions
+    delete_topic_then_recreate_starts_fresh
     display_name_over_100_characters_rejected
     empty_vs_absent_message_attribute_rejected
     fifo_message_group_and_deduplication_ids_over_128_characters_rejected
@@ -146,7 +153,23 @@ elif [[ $mode == "--sns" ]]; then
     fifo_throughput_scope_on_a_standard_topic_or_an_unknown_value_rejected
     fifo_topic_attributes_roundtrip
     fifo_topic_ordering_delivery
+    filter_policy_cidr_matches_ip_address_attributes
+    filter_policy_exists_false_and_anything_but_decide_delivery
+    filter_policy_message_body_scope_cidr_and_or_conjunction_decide_delivery
+    filter_policy_message_body_scope_counts_nested_leaf_keys_toward_the_key_limit
+    filter_policy_message_body_scope_matches_array_members_and_withholds_non_json
+    filter_policy_message_body_scope_numeric_exists_and_anything_but_decide_delivery
+    filter_policy_numeric_operator_boundary_decides_delivery
+    filter_policy_numeric_operator_ignores_a_string_typed_attribute
+    filter_policy_operator_vocabulary_round_trip
+    filter_policy_or_and_cross_key_conjunction_decide_delivery
     filter_policy_over_150_value_combinations_rejected
+    filter_policy_scope_constrains_policy_shape
+    filter_policy_scope_set_without_a_policy_is_hidden_until_a_policy_is_set
+    filter_policy_scope_switch_away_from_message_body_rejected_while_policy_is_nested
+    filter_policy_scope_switch_on_a_live_subscription_reroutes_delivery
+    filter_policy_string_operators_decide_delivery
+    filter_policy_unknown_operator_rejected
     get_topic_attributes_malformed_arn_rejected
     list_subscriptions_by_topic_pagination_exactness
     list_subscriptions_paginates_and_drops_unsubscribed
@@ -157,6 +180,8 @@ elif [[ $mode == "--sns" ]]; then
     notification_signature_verifies_against_the_signing_certificate
     number_attribute_beyond_the_precision_or_scale_bounds_rejected
     op_create_topic_invalid_name_rejected
+    op_set_subscription_attributes_filter_policy_roundtrip
+    overlapping_filters_fan_one_message_to_every_matching_queue_and_the_deleted_topic_refuses_publish_and_listing
     publish_batch_aggregate_size_at_the_exact_262144_byte_boundary
     publish_batch_content_based_dedup_collapses_duplicate_bodies_in_one_call
     publish_batch_duplicate_ids_rejected
@@ -181,23 +206,29 @@ elif [[ $mode == "--sns" ]]; then
     publish_without_target_fails
     raw_delivery_to_sqs_drops_a_message_with_more_than_ten_attributes
     raw_message_delivery_flag_is_case_insensitive_and_reads_back_lowercase
+    remove_permission_unknown_label_is_idempotent
+    set_topic_attribute_invalid_policy_rejected
     set_topic_attributes_invalid_signature_version_rejected
     set_topic_attributes_invalid_tracing_config_rejected
     set_topic_attributes_unknown_name_fails
     sqs_subscription_delivers_the_published_message_unconditionally
-    standard_topic_rejects_fifo_dedup_id
     standard_topic_message_group_id_reaches_the_queue_as_its_message_group_id
+    standard_topic_rejects_fifo_dedup_id
     string_array_message_attribute_matches_a_member_and_binary_is_ignored
     subject_with_a_line_break_or_control_character_rejected
     subscribe_fifo_queue_to_standard_topic_rejected
     subscribe_invalid_endpoint_rejected
+    subscribe_invalid_filter_policy_fails
     subscribe_same_endpoint_is_idempotent
     subscribe_unknown_protocol_rejected
+    subscription_created_with_attributes_roundtrip
+    subscription_filter_policy_update_and_validation
     tag_key_over_128_characters_rejected
     tag_resource_lifecycle
     tag_resource_lifecycle_and_limit
     tag_resource_reserved_aws_prefix_rejected
     topic_maximum_message_size_round_trip_and_bounds_rejected
+    topic_policy_add_remove_permission
     topic_set_attribute_immutable_rejected
     unsubscribe_malformed_arn_fails
     unsubscribe_nonexistent_is_idempotent
@@ -205,6 +236,8 @@ elif [[ $mode == "--sns" ]]; then
     unsubscribe_stops_delivery_and_attribute_lookup_is_rejected
     sns__sqs/fifo_topic_subscription_filter_policy_withholds_non_matching_messages
     sns__sqs/queue_maximum_message_size_does_not_bound_sns_delivery
+    sns__sqs/sns_filter_policy_message_body_scope_suppresses_non_matching
+    sns__sqs/sns_filter_policy_scope_is_orthogonal_and_message_body_matches_nested_keys
     sns__sqs/sns_publish_batch_delivers_one_envelope_per_entry_to_the_subscribed_queue
     sns__sqs/sns_sqs_queue_policy_deny_suppresses_delivery
     sns__sqs/sns_to_sqs_envelope_carries_the_subject_and_typed_message_attributes

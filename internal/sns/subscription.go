@@ -12,13 +12,14 @@ import (
 )
 
 type subscription struct {
-	ARN        string `xml:"SubscriptionArn"`
-	TopicARN   string `xml:"TopicArn"`
-	Owner      string
-	Protocol   string
-	Endpoint   string
-	attributes map[string]string
-	filter     filterPolicy
+	ARN         string `xml:"SubscriptionArn"`
+	TopicARN    string `xml:"TopicArn"`
+	Owner       string
+	Protocol    string
+	Endpoint    string
+	attributes  map[string]string
+	filter      filterPolicy
+	filterScope string
 }
 
 type subscriptionARN struct {
@@ -35,6 +36,11 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 		return subscriptionARN{}, topicNotFound
 	}
 	protocol := form.Get("Protocol")
+	if failure := t.authorize(arn, "SNS:Subscribe", map[string]string{
+		"sns:Protocol": protocol, "sns:Endpoint": form.Get("Endpoint"), "aws:SourceOwner": localAccountID,
+	}); failure != nil {
+		return subscriptionARN{}, failure
+	}
 	if protocol != "sqs" {
 		switch protocol {
 		case "http", "https", "email", "email-json", "sms", "application", "lambda", "firehose":
@@ -59,10 +65,21 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 	if failure != nil {
 		return subscriptionARN{}, failure
 	}
-	candidate := &subscription{attributes: map[string]string{"RawMessageDelivery": "false"}}
+	candidate := &subscription{
+		attributes:  map[string]string{"RawMessageDelivery": "false"},
+		filterScope: filterMessageAttributes,
+	}
+	if scope, present := requested["FilterPolicyScope"]; present {
+		if failure := candidate.setAttribute("FilterPolicyScope", scope); failure != nil {
+			return subscriptionARN{}, failure
+		}
+	}
 	for name, value := range requested {
+		if name == "FilterPolicyScope" {
+			continue
+		}
 		if failure := candidate.setAttribute(name, value); failure != nil {
-			if failure == filterTooComplex {
+			if name == "FilterPolicy" && failure != attributeFilterNested {
 				return subscriptionARN{}, invalid("Attributes Reason: " + strings.TrimPrefix(failure.Message, "Invalid parameter: "))
 			}
 			return subscriptionARN{}, failure
@@ -71,7 +88,8 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 	for _, existing := range t.subs {
 		if existing.Endpoint == endpoint {
 			for name := range requested {
-				if candidate.attributes[name] != existing.attributes[name] {
+				if name == "FilterPolicyScope" && candidate.filterScope != existing.filterScope ||
+					name != "FilterPolicyScope" && candidate.attributes[name] != existing.attributes[name] {
 					return subscriptionARN{}, invalid("Attributes Reason: Subscription already exists with different attributes")
 				}
 			}
@@ -97,7 +115,7 @@ func (sub *subscription) setAttribute(name, value string) *apiError {
 		}
 		sub.attributes[name] = normalized
 	case "FilterPolicy":
-		filter, normalized, failure := parseFilterPolicy(value)
+		filter, normalized, failure := parseFilterPolicy(value, sub.filterScope)
 		if failure != nil {
 			return failure
 		}
@@ -107,6 +125,14 @@ func (sub *subscription) setAttribute(name, value string) *apiError {
 		} else {
 			sub.attributes[name] = normalized
 		}
+	case "FilterPolicyScope":
+		if value != filterMessageAttributes && value != filterMessageBody {
+			return invalid("FilterPolicyScope: Invalid value [" + value + "]. Please use either MessageBody or MessageAttributes")
+		}
+		if value == filterMessageAttributes && sub.filter.nested {
+			return attributeFilterNested
+		}
+		sub.filterScope = value
 	default:
 		return invalid("AttributeName")
 	}
@@ -137,6 +163,9 @@ func (s *service) subscriptionOperation(region, action string, form url.Values) 
 		return nil, sub.setAttribute(form.Get("AttributeName"), form.Get("AttributeValue"))
 	}
 	attributes := maps.Clone(sub.attributes)
+	if sub.filter.match != nil {
+		attributes["FilterPolicyScope"] = sub.filterScope
+	}
 	attributes["SubscriptionArn"] = sub.ARN
 	attributes["TopicArn"] = sub.TopicARN
 	attributes["Endpoint"] = sub.Endpoint

@@ -20,7 +20,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/romycode/ginistack/internal/policy"
 	"github.com/romycode/ginistack/internal/sqs"
 )
 
@@ -125,11 +124,8 @@ func (s *service) publishMessages(arn, origin string, inputs []publishInput, bat
 	if t == nil {
 		return nil, topicNotFound
 	}
-	if t.accessPolicy.Evaluate(policy.Request{
-		PrincipalARN: localSNSUserARN, PrincipalAccount: localAccountID,
-		Action: "sns:Publish", Resource: arn,
-	}) == policy.Deny {
-		return nil, &apiError{"AuthorizationError", "The topic policy denies sns:Publish.", 403}
+	if failure := t.authorize(arn, "SNS:Publish", map[string]string{"aws:SourceOwner": localAccountID}); failure != nil {
+		return nil, failure
 	}
 
 	var size int
@@ -214,7 +210,7 @@ func (s *service) prepareDeliveries(t *topic, arn, origin string, input publishI
 	}
 	var deliveries []sqs.Notification
 	for _, sub := range t.subs {
-		if !sub.filter.matches(input.envelopeAttributes) {
+		if !sub.filter.matches(sub.filterScope, input.message, input.envelopeAttributes) {
 			continue
 		}
 		delivery := base

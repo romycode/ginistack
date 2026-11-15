@@ -132,6 +132,9 @@ func (s *service) topicOperation(region, action string, form url.Values) (any, *
 		return nil, t.setAttribute(form.Get("AttributeName"), form.Get("AttributeValue"))
 	}
 	attributes := maps.Clone(t.attributes)
+	if t.accessPolicy == nil {
+		attributes["Policy"] = encodeTopicPolicy(defaultTopicPolicy(arn))
+	}
 	attributes["Owner"] = awshttp.AccountID
 	attributes["TopicArn"] = arn
 	attributes["SubscriptionsConfirmed"] = strconv.Itoa(len(t.subs))
