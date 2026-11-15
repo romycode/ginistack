@@ -1,6 +1,7 @@
 package sqs
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,12 +18,14 @@ type apiError struct {
 }
 
 var (
-	missingQueue   = &apiError{"AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.", 400}
-	invalidReceipt = &apiError{"ReceiptHandleIsInvalid", "The input receipt handle is invalid.", 400}
-	notImplemented = &apiError{"NotImplemented", "Ginistack does not implement this SQS feature.", 501}
+	missingQueue       = &apiError{"AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.", 400}
+	invalidReceipt     = &apiError{"ReceiptHandleIsInvalid", "The input receipt handle is invalid.", 400}
+	notImplemented     = &apiError{"NotImplemented", "Ginistack does not implement this SQS feature.", 501}
+	serializationError = &apiError{"SerializationException", "Invalid or unsupported SQS request fields.", 400}
 )
 
-const maxRequestBody = 8 << 20
+// The wire limit observed in AWS Emulator is separate from MaximumMessageSize.
+const maxRequestBody = 1600 * 1024
 
 type router struct {
 	operations map[string]http.HandlerFunc
@@ -66,14 +69,14 @@ func (r *router) register[Input any, Output any](name string, run func(*http.Req
 		if query {
 			writeFailure = writeQueryError
 		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, request.Body, maxRequestBody))
+		decoder := json.NewDecoder(request.Body)
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil {
-			writeFailure(w, decodeError(err))
+			writeFailure(w, serializationError)
 			return
 		}
 		if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
-			writeFailure(w, decodeError(err))
+			writeFailure(w, serializationError)
 			return
 		}
 		output, failure := run(request, input)
@@ -92,6 +95,9 @@ func (r *router) register[Input any, Output any](name string, run func(*http.Req
 func (r *router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if !acceptRequestBody(w, request) {
 		return
 	}
 	w.Header().Set("x-amzn-RequestId", token())
@@ -127,12 +133,30 @@ func isQueryRequest(request *http.Request) bool {
 		(request.Method == http.MethodGet && request.URL.Query().Has("Action"))
 }
 
-func decodeError(err error) *apiError {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		return &apiError{"RequestTooLong", "The request body exceeds the local limit.", 413}
+func acceptRequestBody(w http.ResponseWriter, request *http.Request) bool {
+	if request.ContentLength > maxRequestBody {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		return false
 	}
-	return &apiError{"SerializationException", "Invalid or unsupported SQS request fields.", 400}
+	if request.ContentLength >= 0 {
+		return true
+	}
+
+	// Count streamed bodies before dispatch, even if the payload is malformed.
+	limited := http.MaxBytesReader(w, request.Body, maxRequestBody)
+	defer limited.Close()
+	payload, err := io.ReadAll(limited)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+		} else {
+			w.WriteHeader(http.StatusBadRequest)
+		}
+		return false
+	}
+	request.Body = io.NopCloser(bytes.NewReader(payload))
+	return true
 }
 
 func writeError(w http.ResponseWriter, failure *apiError) {

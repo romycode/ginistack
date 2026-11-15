@@ -65,11 +65,13 @@ La ejecución del 15 de noviembre de 2026 probó Ginistack `3080be3` con Go 1.27
 
 El único caso que agotó su presupuesto oficial de 60 segundos verifica un recibo de una cola borrada y recreada. Pasó en **63 segundos** con un presupuesto ampliado, lo que da **255 de 306** si se incluye esa repetición.
 
-Tras esa pasada se añadieron a la regresión dos casos sobre `AWSTraceHeader` y la correspondencia entre `SenderId` y el `UserId` del principal local de STS, además de diez casos sobre permisos y políticas de cola. La selección actual pasa **57 de 57**. La tabla conserva el resultado de la última ejecución completa.
+Tras esa pasada se añadieron a la regresión dos casos sobre `AWSTraceHeader` y `SenderId`, diez sobre permisos y políticas de cola y dos sobre el tamaño de las solicitudes y los mensajes. La selección actual pasa **59 de 59**. Al combinar la pasada completa y las verificaciones posteriores, incluidos los 63 segundos del caso de la cola recreada, hay **268 de 306 casos aprobados** y **38 pendientes de pasar**. La tabla conserva el resultado de la última ejecución completa.
+
+SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la solicitud supera los 1.638.400 bytes, el límite observado en AWS Emulator. Las solicitudes que caben en ese límite siguen sujetas al tamaño de mensaje configurado en la cola, que por defecto es de 1 MiB.
 
 | Área | Casos que pasaron | Compatibilidad pendiente |
 | --- | --- | --- |
-| Colas estándar y FIFO | Ciclo de mensajes, retraso y visibilidad, paginación, vaciado, etiquetas, aislamiento regional, deduplicación y reintentos FIFO. `SenderId` identifica al principal local. | Respuesta HTTP para cargas grandes. |
+| Colas estándar y FIFO | Ciclo de mensajes, retraso y visibilidad, paginación, vaciado, etiquetas, aislamiento regional, deduplicación y reintentos FIFO. `SenderId` identifica al principal local. Límite HTTP `413` y límite de mensaje de 1 MiB. | |
 | Protocolos | Los clientes Query/XML y JSON comparten estado. Pasaron los casos de envío, recepción y errores XML ejercitados por la suite. | Quedan casos de interoperabilidad que usan IAM y Lambda. |
 | DLQ | Traslado al superar el máximo de recepciones, políticas de redrive, listado de orígenes y devolución y cancelación de tareas. | Casos de configuración desde CloudFormation o asociados a una clave KMS. |
 | Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. Las trazas válidas se conservan, las vacías se rechazan y las de tipo o formato inválido se descartan al entregar. | |

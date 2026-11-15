@@ -44,6 +44,8 @@ done
 curl -fsS --max-time 1 "http://$addr/healthz" >/dev/null
 
 checks=(
+  max_message_size
+  default_max_message_size_is_one_mib_boundary
   add_remove_permission
   add_remove_permission_updates_policy
   add_permission_invalid_action_rejected
