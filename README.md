@@ -64,10 +64,12 @@ La ejecución del 15 de noviembre de 2026 probó Ginistack `3080be3` con Go 1.27
 
 El único caso que agotó su presupuesto oficial de 60 segundos verifica un recibo de una cola borrada y recreada. Pasó en **63 segundos** con un presupuesto ampliado, lo que da **255 de 306** si se incluye esa repetición.
 
+Tras esa pasada se añadieron a la regresión dos casos aprobados sobre `AWSTraceHeader` y la correspondencia entre `SenderId` y el `UserId` del principal local de STS. La selección actual pasa **47 de 47**. La tabla conserva el resultado de la última ejecución completa.
+
 | Área | Casos que pasaron | Compatibilidad pendiente |
 | --- | --- | --- |
-| Colas estándar y FIFO | Ciclo de mensajes, retraso y visibilidad, paginación, vaciado, etiquetas, aislamiento regional, deduplicación y reintentos FIFO. | Respuesta HTTP para cargas grandes y atributo del sistema `SenderId`. |
+| Colas estándar y FIFO | Ciclo de mensajes, retraso y visibilidad, paginación, vaciado, etiquetas, aislamiento regional, deduplicación y reintentos FIFO. `SenderId` identifica al principal local. | Respuesta HTTP para cargas grandes. |
 | Protocolos | Los clientes Query/XML y JSON comparten estado. Pasaron los casos de envío, recepción y errores XML ejercitados por la suite. | Quedan casos de interoperabilidad que usan IAM y Lambda. |
 | DLQ | Traslado al superar el máximo de recepciones, políticas de redrive, listado de orígenes y devolución y cancelación de tareas. | Casos de configuración desde CloudFormation o asociados a una clave KMS. |
-| Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. | El tratamiento de algunas cabeceras `AWSTraceHeader` malformadas. |
+| Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. Las trazas válidas se conservan, las vacías se rechazan y las de tipo o formato inválido se descartan al entregar. | |
 | Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`. | Políticas de cola, permisos, IAM, KMS, Lambda, CloudFormation y CloudWatch. |

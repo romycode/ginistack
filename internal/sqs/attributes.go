@@ -180,10 +180,10 @@ func messageTraceHeader(attributes map[string]messageAttribute) (string, *apiErr
 		}
 	}
 	trace, exists := attributes["AWSTraceHeader"]
-	if !exists {
+	if !exists || trace.DataType != "String" {
 		return "", nil
 	}
-	if trace.StringValue == nil || *trace.StringValue == "" || trace.DataType != "String" {
+	if trace.StringValue == nil || *trace.StringValue == "" {
 		return "", &apiError{"InvalidParameterValue", "Message system attribute 'AWSTraceHeader' must contain a non-empty value of type 'String'.", 400}
 	}
 	if !traceRootPattern.MatchString(*trace.StringValue) {

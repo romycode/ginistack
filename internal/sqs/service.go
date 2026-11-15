@@ -10,6 +10,7 @@ import (
 )
 
 const accountID = "000000000000"
+const localUserID = "AIDAGINISTACKLOCAL0000"
 
 var queueNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,80}$`)
 
