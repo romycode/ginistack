@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -59,93 +60,170 @@ func (s *service) publish(region, origin string, form url.Values) (publishResult
 	if arn == "" {
 		arn = target
 	}
+	if arn == "" {
+		return publishResult{}, invalid("TopicArn or TargetArn Reason: no value for required parameter")
+	}
 	if failure := checkTopicARN(region, arn); failure != nil {
 		return publishResult{}, failure
 	}
+	input, failure := preparePublish(form)
+	if failure != nil {
+		return publishResult{}, failure
+	}
+	results, failure := s.publishMessages(arn, origin, []publishInput{input}, false)
+	if failure != nil {
+		return publishResult{}, failure
+	}
+	return results[0], nil
+}
+
+type publishInput struct {
+	message, body, subject string
+	group, deduplicationID string
+	hasDeduplicationID     bool
+	size                   int
+	attributes             map[string]sqs.NotificationAttribute
+	envelopeAttributes     map[string]envelopeAttribute
+}
+
+func preparePublish(form url.Values) (publishInput, *apiError) {
 	message, subject := form.Get("Message"), form.Get("Subject")
-	if message == "" || !utf8.ValidString(message) {
-		return publishResult{}, invalid("Message")
+	if message == "" {
+		return publishInput{}, invalid("Empty message")
+	}
+	if !utf8.ValidString(message) {
+		return publishInput{}, invalid("Message")
 	}
 	if form.Has("Subject") && (strings.TrimSpace(subject) == "" || !utf8.ValidString(subject) || utf8.RuneCountInString(subject) > 100 ||
 		strings.ContainsFunc(subject, func(r rune) bool { return r != '\t' && unicode.IsControl(r) })) {
-		return publishResult{}, invalid("Subject")
+		return publishInput{}, invalid("Subject")
 	}
 	attributes, envelopeAttributes, size, failure := publishAttributes(form)
 	if failure != nil {
-		return publishResult{}, failure
-	}
-	if len(message)+size > 256*1024 {
-		return publishResult{}, invalid("Message too long")
+		return publishInput{}, failure
 	}
 	body, failure := protocolMessage(message, form.Get("MessageStructure"))
 	if failure != nil {
-		return publishResult{}, failure
+		return publishInput{}, failure
 	}
 	group, deduplicationID := form.Get("MessageGroupId"), form.Get("MessageDeduplicationId")
 	if group != "" && !validFIFOToken(group) {
-		return publishResult{}, invalid("MessageGroupId")
+		return publishInput{}, invalidFIFOToken("MessageGroupId")
 	}
 
+	return publishInput{
+		message: message, body: body, subject: subject,
+		group: group, deduplicationID: deduplicationID, hasDeduplicationID: form.Has("MessageDeduplicationId"),
+		size: len(message) + size, attributes: attributes, envelopeAttributes: envelopeAttributes,
+	}, nil
+}
+
+func (s *service) publishMessages(arn, origin string, inputs []publishInput, batch bool) ([]publishResult, *apiError) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.topics[arn]
 	if t == nil {
-		return publishResult{}, topicNotFound
+		return nil, topicNotFound
 	}
 	if t.accessPolicy.Evaluate(policy.Request{
 		PrincipalARN: localSNSUserARN, PrincipalAccount: localAccountID,
 		Action: "sns:Publish", Resource: arn,
 	}) == policy.Deny {
-		return publishResult{}, &apiError{"AuthorizationError", "The topic policy denies sns:Publish.", 403}
+		return nil, &apiError{"AuthorizationError", "The topic policy denies sns:Publish.", 403}
 	}
-	fifo := t.attributes["FifoTopic"] == "true"
-	var key deduplicationKey
-	now := time.Now()
-	if fifo {
-		var failure *apiError
-		key, failure = t.fifoKey(message, group, deduplicationID)
-		if failure != nil {
-			return publishResult{}, failure
+
+	var size int
+	for _, input := range inputs {
+		size += input.size
+	}
+	if size > t.messageSizeLimit() {
+		if batch {
+			return nil, &apiError{"BatchRequestTooLong", "The length of all the messages put together is more than the limit.", 400}
 		}
+		return nil, invalid("Message too long")
+	}
+
+	fifo := t.attributes["FifoTopic"] == "true"
+	now := time.Now()
+	sequence := t.sequence
+	staged := make(map[deduplicationKey]deduplicationRecord)
+	results := make([]publishResult, 0, len(inputs))
+	var deliveries []sqs.Notification
+	for _, input := range inputs {
+		var key deduplicationKey
+		if fifo {
+			var failure *apiError
+			key, failure = t.fifoKey(input.message, input.group, input.deduplicationID)
+			if failure != nil {
+				return nil, failure
+			}
+			if saved, duplicate := staged[key]; duplicate {
+				results = append(results, saved.result)
+				continue
+			}
+			if saved, duplicate := t.deduplication[key]; duplicate && now.Before(saved.expiry) {
+				results = append(results, saved.result)
+				continue
+			}
+		} else if input.hasDeduplicationID {
+			return nil, invalid("MessageDeduplicationId Reason: The request includes MessageDeduplicationId parameter that is not valid for this topic type")
+		}
+
+		result := publishResult{MessageID: uuid()}
+		if fifo {
+			sequence++
+			result.SequenceNumber = fmt.Sprintf("%039d", sequence)
+			staged[key] = deduplicationRecord{result, now.Add(5 * time.Minute)}
+		}
+		prepared, failure := s.prepareDeliveries(t, arn, origin, input, result.MessageID, fifo, now)
+		if failure != nil {
+			return nil, failure
+		}
+		results = append(results, result)
+		deliveries = append(deliveries, prepared...)
+	}
+	if fifo {
 		for key, record := range t.deduplication {
 			if !now.Before(record.expiry) {
 				delete(t.deduplication, key)
 			}
 		}
-		if saved, duplicate := t.deduplication[key]; duplicate {
-			return saved.result, nil
-		}
-	} else if form.Has("MessageDeduplicationId") {
-		return publishResult{}, invalid("MessageDeduplicationId Reason: The request includes MessageDeduplicationId parameter that is not valid for this topic type")
+		maps.Copy(t.deduplication, staged)
+		t.sequence = sequence
 	}
+	for _, delivery := range deliveries {
+		s.deliver(delivery)
+	}
+	return results, nil
+}
 
-	result := publishResult{MessageID: uuid()}
+func (s *service) prepareDeliveries(t *topic, arn, origin string, input publishInput, messageID string, fifo bool, now time.Time) ([]sqs.Notification, *apiError) {
 	var base sqs.Notification
 	base.TopicARN = arn
-	if group != "" {
-		base.GroupID = &group
+	if input.group != "" {
+		base.GroupID = &input.group
 	}
 	if fifo {
 		// SNS has already deduplicated this publish. Give each accepted publish a distinct ID
 		// at SQS, even when the FIFO topic and queue have different deduplication scopes.
-		base.DeduplicationID = &result.MessageID
+		base.DeduplicationID = &messageID
 	}
 	envelope := notificationEnvelope{
-		Type: "Notification", MessageID: result.MessageID, TopicARN: arn, Subject: subject,
-		Message: body, Timestamp: now.UTC().Format("2006-01-02T15:04:05.000Z"), MessageAttributes: envelopeAttributes,
+		Type: "Notification", MessageID: messageID, TopicARN: arn, Subject: input.subject,
+		Message: input.body, Timestamp: now.UTC().Format("2006-01-02T15:04:05.000Z"), MessageAttributes: input.envelopeAttributes,
 	}
 	var deliveries []sqs.Notification
 	for _, sub := range t.subs {
-		if !sub.filter.matches(envelopeAttributes) {
+		if !sub.filter.matches(input.envelopeAttributes) {
 			continue
 		}
 		delivery := base
 		delivery.QueueARN = sub.Endpoint
 		if sub.attributes["RawMessageDelivery"] == "true" {
-			if len(attributes) > 10 {
+			if len(input.attributes) > 10 {
 				continue
 			}
-			delivery.Body, delivery.Attributes = body, attributes
+			delivery.Body, delivery.Attributes = input.body, input.attributes
 		} else {
 			if !fifo && envelope.Signature == "" {
 				version := t.attributes["SignatureVersion"]
@@ -153,7 +231,7 @@ func (s *service) publish(region, origin string, form url.Values) (publishResult
 					version = "1"
 				}
 				if err := s.sign(&envelope, version, origin); err != nil {
-					return publishResult{}, &apiError{"InternalError", "Unable to sign the notification.", 500}
+					return nil, &apiError{"InternalError", "Unable to sign the notification.", 500}
 				}
 			}
 			envelope.UnsubscribeURL = origin + "/?Action=Unsubscribe&SubscriptionArn=" + sub.ARN
@@ -161,15 +239,7 @@ func (s *service) publish(region, origin string, form url.Values) (publishResult
 		}
 		deliveries = append(deliveries, delivery)
 	}
-	if fifo {
-		t.sequence++
-		result.SequenceNumber = fmt.Sprintf("%039d", t.sequence)
-		t.deduplication[key] = deduplicationRecord{result, now.Add(5 * time.Minute)}
-	}
-	for _, delivery := range deliveries {
-		s.deliver(delivery)
-	}
-	return result, nil
+	return deliveries, nil
 }
 
 func (n notificationEnvelope) body() string {
@@ -231,13 +301,17 @@ func (t *topic) fifoKey(message, group, id string) (deduplicationKey, *apiError)
 		id = hex.EncodeToString(sum[:])
 	}
 	if !validFIFOToken(id) {
-		return deduplicationKey{}, invalid("MessageDeduplicationId")
+		return deduplicationKey{}, invalidFIFOToken("MessageDeduplicationId")
 	}
 	key := deduplicationKey{id: id}
 	if t.attributes["FifoThroughputScope"] == "MessageGroup" {
 		key.group = group
 	}
 	return key, nil
+}
+
+func invalidFIFOToken(name string) *apiError {
+	return invalid("The " + name + " parameter can only include alphanumeric and punctuation characters. 1 to 128 in length")
 }
 
 func validFIFOToken(value string) bool {
@@ -309,6 +383,11 @@ func publishAttributes(form url.Values) (map[string]sqs.NotificationAttribute, m
 			if value == "" || !utf8.ValidString(value) || fields.Has("Value.BinaryValue") {
 				return nil, nil, 0, &apiError{"ParameterValueInvalid", "The message attribute '" + name + "' must contain non-empty message attribute value for message attribute type '" + dataType + "'.", 400}
 			}
+			if baseType == "Number" {
+				if failure := validateNumberAttribute(name, value); failure != nil {
+					return nil, nil, 0, failure
+				}
+			}
 			attribute.StringValue = &value
 			valueSize = len(value)
 		case "Binary":
@@ -327,6 +406,36 @@ func publishAttributes(form url.Values) (map[string]sqs.NotificationAttribute, m
 		size += len(name) + len(dataType) + valueSize
 	}
 	return raw, envelope, size, nil
+}
+
+var decimalAttributePattern = regexp.MustCompile(`^[+-]?([0-9]*)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$`)
+
+func validateNumberAttribute(name, value string) *apiError {
+	parts := decimalAttributePattern.FindStringSubmatch(value)
+	if parts == nil || parts[1]+parts[2] == "" {
+		return &apiError{"ParameterValueInvalid", "Could not cast message attribute '" + name + "' value to number.", 400}
+	}
+	digits := strings.TrimLeft(parts[1]+parts[2], "0")
+	if digits == "" {
+		return nil
+	}
+	label := fmt.Sprintf("Message attribute '%s' number value [%s]", name, value)
+	if len(strings.TrimRight(digits, "0")) > 38 {
+		return &apiError{"ParameterValueInvalid", label + " must have less than 38 precision digits.", 400}
+	}
+	var exponent int
+	var err error
+	if parts[3] != "" {
+		exponent, err = strconv.Atoi(parts[3])
+	}
+	if err != nil || exponent < -2*len(value)-128 || exponent > 2*len(value)+126 {
+		return &apiError{"ParameterValueInvalid", label + " scale must be 10^-128 and 10^126.", 400}
+	}
+	magnitude := len(digits) - len(parts[2]) + exponent - 1
+	if magnitude < -128 || magnitude >= 126 {
+		return &apiError{"ParameterValueInvalid", label + " scale must be 10^-128 and 10^126.", 400}
+	}
+	return nil
 }
 
 func (s *service) sign(envelope *notificationEnvelope, version, origin string) error {

@@ -74,9 +74,12 @@ func (s *service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var result any
 	var failure *apiError
-	if action == "Publish" {
+	switch action {
+	case "Publish":
 		result, failure = s.publish(region, requestOrigin(r), r.Form)
-	} else {
+	case "PublishBatch":
+		result, failure = s.publishBatch(region, requestOrigin(r), r.Form)
+	default:
 		result, failure = s.execute(region, action, r.Form)
 	}
 	if failure != nil {

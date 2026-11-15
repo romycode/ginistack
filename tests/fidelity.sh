@@ -136,14 +136,17 @@ elif [[ $mode == "--sns" ]]; then
     create_topic_idempotent_and_conflict
     create_topic_invalid_attribute_creates_nothing
     create_topic_with_different_tags_rejected
+    custom_attribute_type_labels_and_string_array_survive_both_delivery_modes
     delete_topic_cascades_subscriptions
     display_name_over_100_characters_rejected
     empty_vs_absent_message_attribute_rejected
+    fifo_message_group_and_deduplication_ids_over_128_characters_rejected
     fifo_message_group_id_validation
     fifo_throughput_scope_message_group_narrows_the_deduplication_scope
     fifo_throughput_scope_on_a_standard_topic_or_an_unknown_value_rejected
     fifo_topic_attributes_roundtrip
     fifo_topic_ordering_delivery
+    filter_policy_over_150_value_combinations_rejected
     get_topic_attributes_malformed_arn_rejected
     list_subscriptions_by_topic_pagination_exactness
     list_subscriptions_paginates_and_drops_unsubscribed
@@ -152,12 +155,30 @@ elif [[ $mode == "--sns" ]]; then
     list_topics_paginates_every_created_topic_exactly_once
     message_structure_json_selects_the_protocol_body_and_falls_back_to_default
     notification_signature_verifies_against_the_signing_certificate
+    number_attribute_beyond_the_precision_or_scale_bounds_rejected
     op_create_topic_invalid_name_rejected
+    publish_batch_aggregate_size_at_the_exact_262144_byte_boundary
+    publish_batch_content_based_dedup_collapses_duplicate_bodies_in_one_call
+    publish_batch_duplicate_ids_rejected
+    publish_batch_empty_fails
+    publish_batch_entry_group_or_dedup_id_over_128_characters_rejects_the_whole_batch
+    publish_batch_entry_id_over_80_characters_or_with_invalid_characters_rejected
+    publish_batch_fifo_orders_entries_and_dedups_across_batches
+    publish_batch_filter_policy_is_evaluated_per_entry
+    publish_batch_one_call_two_message_groups_each_keeps_its_own_order
+    publish_batch_one_invalid_fifo_entry_rejected_and_no_sibling_delivered
+    publish_batch_success_delivery
+    publish_batch_to_a_deleted_topic_not_found
+    publish_batch_too_long_in_aggregate_rejected_and_nothing_delivered
+    publish_batch_too_many_entries_rejected
+    publish_batch_validation_is_request_level
     publish_by_target_arn_naming_a_topic_delivers_like_topic_arn
+    publish_empty_message_fails
     publish_of_exactly_256_kib_delivered_intact_and_one_byte_more_rejected
     publish_size_limit_counts_message_attributes
     publish_still_delivers_to_siblings_when_a_subscribed_queue_is_deleted
     publish_with_a_reserved_attribute_name_prefix_rejected
+    publish_without_target_fails
     raw_delivery_to_sqs_drops_a_message_with_more_than_ten_attributes
     raw_message_delivery_flag_is_case_insensitive_and_reads_back_lowercase
     set_topic_attributes_invalid_signature_version_rejected
@@ -165,11 +186,18 @@ elif [[ $mode == "--sns" ]]; then
     set_topic_attributes_unknown_name_fails
     sqs_subscription_delivers_the_published_message_unconditionally
     standard_topic_rejects_fifo_dedup_id
+    standard_topic_message_group_id_reaches_the_queue_as_its_message_group_id
+    string_array_message_attribute_matches_a_member_and_binary_is_ignored
     subject_with_a_line_break_or_control_character_rejected
+    subscribe_fifo_queue_to_standard_topic_rejected
     subscribe_invalid_endpoint_rejected
     subscribe_same_endpoint_is_idempotent
+    subscribe_unknown_protocol_rejected
+    tag_key_over_128_characters_rejected
     tag_resource_lifecycle
     tag_resource_lifecycle_and_limit
+    tag_resource_reserved_aws_prefix_rejected
+    topic_maximum_message_size_round_trip_and_bounds_rejected
     topic_set_attribute_immutable_rejected
     unsubscribe_malformed_arn_fails
     unsubscribe_nonexistent_is_idempotent
@@ -177,6 +205,7 @@ elif [[ $mode == "--sns" ]]; then
     unsubscribe_stops_delivery_and_attribute_lookup_is_rejected
     sns__sqs/fifo_topic_subscription_filter_policy_withholds_non_matching_messages
     sns__sqs/queue_maximum_message_size_does_not_bound_sns_delivery
+    sns__sqs/sns_publish_batch_delivers_one_envelope_per_entry_to_the_subscribed_queue
     sns__sqs/sns_sqs_queue_policy_deny_suppresses_delivery
     sns__sqs/sns_to_sqs_envelope_carries_the_subject_and_typed_message_attributes
     sns__sqs/sqs_envelope_raw_bytes_are_pretty_printed_in_canonical_key_order

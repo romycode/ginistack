@@ -46,11 +46,12 @@ El estado se guarda en memoria y se pierde al detener el proceso. Se usa una cue
 ### SNS
 
 - Crear, listar y borrar tópicos estándar y FIFO por región, con paginación, atributos y etiquetas. Borrar el tópico elimina sus suscripciones.
-- Suscribir colas SQS, listar y consultar suscripciones, actualizar `RawMessageDelivery` y filtrar por igualdad de atributos `String` y `Number`.
+- Suscribir colas SQS, listar y consultar suscripciones, actualizar `RawMessageDelivery` y filtrar por igualdad de atributos `String`, `Number` y elementos de `String.Array`. El valor original se conserva en la entrega.
 - Publicar hacia una cola SQS en modo raw o con el envoltorio de SNS. Los tópicos FIFO mantienen el orden por grupo y deduplican por ID o por contenido. La cola debe autorizar a `sns.amazonaws.com` a ejecutar `sqs:SendMessage` mediante su política. El evaluador compartido comprueba el ARN del tópico y aplica las denegaciones de la cola.
+- Publicar hasta 10 mensajes con `PublishBatch`. Ginistack valida el lote completo antes de entregar ninguna entrada. Devuelve un resultado por entrada y mantiene el orden y la deduplicación FIFO dentro de un lote y entre lotes. El límite conjunto por defecto es de 256 KiB y se puede cambiar con `MaximumMessageSize`.
 - El envoltorio de los tópicos estándar incluye una firma verificable con el certificado local servido por Ginistack. El certificado y el estado de SNS duran lo que dura el proceso.
 
-Quedan pendientes `PublishBatch`, otros operadores y ámbitos de filtrado, suscripciones a otros protocolos e integraciones con otros servicios.
+Quedan pendientes otros operadores y ámbitos de filtrado, suscripciones a otros protocolos e integraciones con otros servicios.
 
 ## Pruebas oficiales de AWS
 
@@ -112,17 +113,17 @@ SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la sol
 
 ### Resultados de SNS
 
-La ejecución completa probó Ginistack `1f0708d` con Go 1.27.4 y la revisión oficial `4df2823`. Pasaron **96 de 257 casos (37,4 %)** y quedaron **161 pendientes**. Los directorios `sns` y `sns__sqs` incluyen casos que invocan otros servicios desde la propia prueba.
+La ejecución completa tras añadir `PublishBatch` usó Go 1.27.4 y la revisión oficial `4df2823`. Pasaron **124 de 257 casos (48,2 %)** y quedaron **133 pendientes**. Pasaron 28 casos más que en la medición de `1f0708d` y se conservaron los 96 aprobados anteriores. Los directorios `sns` y `sns__sqs` incluyen casos que invocan otros servicios desde la propia prueba.
 
 | Resultado del runner | `sns` | `sns__sqs` | Total |
 | --- | ---: | ---: | ---: |
-| Aprobado | 90 | 6 | **96** |
-| Sin implementar | 75 | 2 | 77 |
-| Comprobación fallida | 42 | 1 | 43 |
-| Error del emulador | 37 | 3 | 40 |
-| Tiempo agotado | 1 | 0 | 1 |
+| Aprobado | 117 | 7 | **124** |
+| Sin implementar | 66 | 1 | 67 |
+| Comprobación fallida | 26 | 1 | 27 |
+| Error del emulador | 36 | 3 | 39 |
+| Tiempo agotado | 0 | 0 | 0 |
 | **Total** | **245** | **12** | **257** |
 
-La selección de regresión cubre **51 casos**, incluidos los de tópicos, suscripciones SQS, publicación, FIFO, firma del envoltorio y filtrado básico. El caso que amplía un filtro de suscripción usa 120 segundos para cubrir dos ventanas de ausencia.
+Los **80 casos** de la selección de regresión pasaron dentro de la ejecución completa. La selección incluye tópicos, suscripciones SQS, publicación individual y por lotes, FIFO, firma del envoltorio y filtrado por atributos. El caso que amplía un filtro de suscripción usa 120 segundos para cubrir dos ventanas de ausencia.
 
-El único caso que agotó su presupuesto se repitió con 90 segundos. Falló porque una suscripción con `FilterPolicy` no recibió el mensaje que contenía el valor buscado dentro de un atributo `String.Array`. Otros casos pendientes ejercitan `PublishBatch`, filtros sobre el cuerpo del mensaje, confirmación de suscripciones y operaciones que requieren IAM, KMS o CloudFormation.
+El caso de filtrado por los elementos de `String.Array`, que antes agotaba su presupuesto, también pasó. Entre los casos pendientes están los filtros sobre el cuerpo del mensaje, la confirmación de suscripciones y las operaciones que requieren IAM, KMS o CloudFormation.

@@ -34,7 +34,13 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 	if t == nil {
 		return subscriptionARN{}, topicNotFound
 	}
-	if form.Get("Protocol") != "sqs" {
+	protocol := form.Get("Protocol")
+	if protocol != "sqs" {
+		switch protocol {
+		case "http", "https", "email", "email-json", "sms", "application", "lambda", "firehose":
+		default:
+			return subscriptionARN{}, invalid("Amazon SNS does not support this protocol string: " + protocol)
+		}
 		return subscriptionARN{}, &apiError{"NotImplemented", "Ginistack supports SQS subscriptions.", 501}
 	}
 	endpoint := form.Get("Endpoint")
@@ -42,9 +48,12 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 	if len(parts) != 6 || parts[0] != "arn" || parts[1] != "aws" || parts[2] != "sqs" || !policy.IsAccountID(parts[4]) {
 		return subscriptionARN{}, invalid("SQS endpoint ARN")
 	}
-	base, _ := strings.CutSuffix(parts[5], ".fifo")
+	base, fifoQueue := strings.CutSuffix(parts[5], ".fifo")
 	if !topicName.MatchString(base) || parts[3] == "" || len(parts[5]) > 80 {
 		return subscriptionARN{}, invalid("SQS endpoint ARN")
+	}
+	if fifoQueue && t.attributes["FifoTopic"] != "true" {
+		return subscriptionARN{}, invalid("Invalid parameter: Endpoint Reason: FIFO SQS Queues can not be subscribed to standard SNS topics")
 	}
 	requested, failure := queryMap(form, "Attributes.entry", "key", "value")
 	if failure != nil {
@@ -53,6 +62,9 @@ func (s *service) subscribe(region string, form url.Values) (subscriptionARN, *a
 	candidate := &subscription{attributes: map[string]string{"RawMessageDelivery": "false"}}
 	for name, value := range requested {
 		if failure := candidate.setAttribute(name, value); failure != nil {
+			if failure == filterTooComplex {
+				return subscriptionARN{}, invalid("Attributes Reason: " + strings.TrimPrefix(failure.Message, "Invalid parameter: "))
+			}
 			return subscriptionARN{}, failure
 		}
 	}

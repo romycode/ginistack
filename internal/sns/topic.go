@@ -19,6 +19,12 @@ import (
 
 var topicName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+const (
+	defaultMessageSize = 256 * 1024
+	minimumMessageSize = 1024
+	maximumMessageSize = 1024 * 1024
+)
+
 type topic struct {
 	attributes    map[string]string
 	tags          map[string]string
@@ -45,7 +51,7 @@ func (s *service) createTopic(region string, form url.Values) (topicARN, *apiErr
 	if value, present := requested["FifoTopic"]; (fifo && value != "true") || (present && !fifo && value != "false") {
 		return topicARN{}, invalid("Topic Name")
 	}
-	tags, failure := queryMap(form, "Tags.member", "Key", "Value")
+	tags, failure := queryTags(form)
 	if failure != nil {
 		return topicARN{}, failure
 	}
@@ -141,6 +147,12 @@ func (t *topic) setAttribute(name, value string) *apiError {
 		if !utf8.ValidString(value) || utf8.RuneCountInString(value) > 100 {
 			return invalid("DisplayName")
 		}
+	case "MaximumMessageSize":
+		size, err := strconv.Atoi(value)
+		if err != nil || size < minimumMessageSize || size > maximumMessageSize {
+			return invalid(fmt.Sprintf("MaximumMessageSize: %s is not an integer between %d and %d bytes", value, minimumMessageSize, maximumMessageSize))
+		}
+		value = strconv.Itoa(size)
 	case "Policy":
 		if value == "" {
 			delete(attributes, name)
@@ -179,6 +191,13 @@ func (t *topic) setAttribute(name, value string) *apiError {
 	}
 	attributes[name] = value
 	return nil
+}
+
+func (t *topic) messageSizeLimit() int {
+	if size, _ := strconv.Atoi(t.attributes["MaximumMessageSize"]); size > 0 {
+		return size
+	}
+	return defaultMessageSize
 }
 
 func (s *service) listTopics(region, token string) (any, *apiError) {
@@ -236,12 +255,30 @@ func (s *service) cursorStart(scope, token string) (string, *apiError) {
 
 type resourceTag struct{ Key, Value string }
 
+func queryTags(form url.Values) (map[string]string, *apiError) {
+	for _, field := range slices.Sorted(maps.Keys(form)) {
+		tail, tagged := strings.CutPrefix(field, "Tags.member.")
+		index, keyField := strings.CutSuffix(tail, ".Key")
+		n, err := strconv.Atoi(index)
+		if !tagged || !keyField || err != nil || n < 1 {
+			continue
+		}
+		if key := form.Get(field); utf8.RuneCountInString(key) > 128 {
+			return nil, &apiError{"ValidationError", fmt.Sprintf("1 validation error detected: Value '%s' at 'tags.%d.member.key' failed to satisfy constraint: Member must have length less than or equal to 128", key, n), 400}
+		}
+	}
+	return queryMap(form, "Tags.member", "Key", "Value")
+}
+
 func validateTags(tags map[string]string) *apiError {
 	if len(tags) > 50 {
 		return &apiError{"TagLimitExceeded", "Could not complete request: tag quota of per resource exceeded", 400}
 	}
 	for key, value := range tags {
-		if key == "" || len(key) > 128 || len(value) > 256 || strings.HasPrefix(strings.ToLower(key), "aws:") {
+		if strings.HasPrefix(strings.ToLower(key), "aws:") {
+			return invalid("Tags Reason: Caller is an end user and not allowed to mutate system tags")
+		}
+		if key == "" || utf8.RuneCountInString(value) > 256 {
 			return invalid("Tags")
 		}
 	}
@@ -267,7 +304,7 @@ func (s *service) tagOperation(region, action string, form url.Values) (any, *ap
 		}
 		return result, nil
 	case "TagResource":
-		change, failure := queryMap(form, "Tags.member", "Key", "Value")
+		change, failure := queryTags(form)
 		if failure != nil {
 			return nil, failure
 		}
