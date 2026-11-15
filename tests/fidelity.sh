@@ -8,8 +8,8 @@ report_dir=${GINISTACK_REPORT_DIR:-"$root/.fidelity-reports"}
 addr=${GINISTACK_TEST_ADDR:-127.0.0.1:14566}
 go_binary=${GO:-go}
 mode=${1:-}
-if [[ $# -gt 1 || ($mode != "" && $mode != "--all-sqs" && $mode != "--sns") ]]; then
-  echo "Usage: $0 [--all-sqs | --sns]" >&2
+if [[ $# -gt 1 || ($mode != "" && $mode != "--all-sqs" && $mode != "--sns" && $mode != "--all-sns") ]]; then
+  echo "Usage: $0 [--all-sqs | --sns | --all-sns]" >&2
   exit 2
 fi
 pid=
@@ -109,15 +109,21 @@ checks=(
 workers=6
 timeout_args=()
 service=sqs
-if [[ $mode == "--all-sqs" ]]; then
+if [[ $mode == "--all-sqs" || $mode == "--all-sns" ]]; then
   workers=20
   if [[ -n ${GINISTACK_CASE_TIMEOUT:-} ]]; then
     timeout_args=(--timeout "$GINISTACK_CASE_TIMEOUT")
   fi
+  directories=(sqs)
+  if [[ $mode == "--all-sns" ]]; then
+    directories=(sns__sqs sns)
+  fi
   checks=()
-  for path in "$suite"/behavioral/sqs/check_*.py; do
-    check=${path##*/check_}
-    checks+=("${check%.py}")
+  for directory in "${directories[@]}"; do
+    for path in "$suite/behavioral/$directory"/check_*.py; do
+      check=${path##*/check_}
+      checks+=("$directory/${check%.py}")
+    done
   done
 elif [[ $mode == "--sns" ]]; then
   workers=12
@@ -184,12 +190,17 @@ run_check() {
     directory=${check%/*}
     check=${check##*/}
   fi
+  local -a dependencies=()
+  if [[ $directory == sns ]]; then
+    dependencies=(--with 'requests==2.34.2')
+  fi
   if [[ $check == a_message_filtered_out_at_publish_time_is_never_redelivered_when_the_policy_is_relaxed ]]; then
     # Long polls and two deliberate absence windows can exceed the runner's 60-second default.
     case_timeout=(--timeout "${GINISTACK_CASE_TIMEOUT:-120}")
   fi
   PYTHONPATH="$suite/src" uv run --no-project --python 3.12 \
     --with 'boto3==1.43.108' --with 'botocore==1.43.108' --with 'certifi==2026.10.18' \
+    "${dependencies[@]}" \
     python -m fidelity_tests_runner run "$suite/behavioral/$directory/check_$check.py" \
     --endpoint "http://$addr" --region us-west-2 --auth off --strict-cleanup "${case_timeout[@]}" \
     --report "$report_dir/$check.json"

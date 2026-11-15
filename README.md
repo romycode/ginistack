@@ -68,10 +68,16 @@ Para ejecutar el directorio completo de SQS y ver también qué casos quedan pen
 ./tests/fidelity.sh --all-sqs
 ```
 
-Para probar SNS y su entrega a SQS:
+Para repetir la selección de regresión de SNS y su entrega a SQS:
 
 ```sh
 ./tests/fidelity.sh --sns
+```
+
+Para ejecutar todos los casos de los directorios oficiales `sns` y `sns__sqs`:
+
+```sh
+./tests/fidelity.sh --all-sns
 ```
 
 Para cubrir los casos de línea de comandos, instala AWS CLI v2 y déjala disponible en `PATH`. El runner oficial asigna 60 segundos por defecto y hasta 600 para los casos marcados como de tiempo real o que requieren herramientas lentas. Puedes fijar un límite distinto con `GINISTACK_CASE_TIMEOUT`.
@@ -106,12 +112,17 @@ SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la sol
 
 ### Resultados de SNS
 
-La primera selección de regresión usa la misma revisión oficial. Cubre el ciclo de vida de tópicos y suscripciones, publicación, tamaño de mensajes, FIFO, formato y firma del envoltorio, filtrado y entrega a SQS con políticas de cola.
+La ejecución completa probó Ginistack `1f0708d` con Go 1.27.4 y la revisión oficial `4df2823`. Pasaron **96 de 257 casos (37,4 %)** y quedaron **161 pendientes**. Los directorios `sns` y `sns__sqs` incluyen casos que invocan otros servicios desde la propia prueba.
 
-| Directorio de la suite | Casos aprobados en la selección | Casos del directorio |
-| --- | ---: | ---: |
-| `sns` | 45 | 245 |
-| `sns__sqs` | 6 | 12 |
-| **Total** | **51** | **257** |
+| Resultado del runner | `sns` | `sns__sqs` | Total |
+| --- | ---: | ---: | ---: |
+| Aprobado | 90 | 6 | **96** |
+| Sin implementar | 75 | 2 | 77 |
+| Comprobación fallida | 42 | 1 | 43 |
+| Error del emulador | 37 | 3 | 40 |
+| Tiempo agotado | 1 | 0 | 1 |
+| **Total** | **245** | **12** | **257** |
 
-El caso que verifica que ampliar un filtro no recupera mensajes descartados usa un presupuesto de 120 segundos para cubrir dos ventanas de ausencia. Los otros 206 casos de esos directorios quedan pendientes de evaluar en una ejecución completa.
+La selección de regresión cubre **51 casos**, incluidos los de tópicos, suscripciones SQS, publicación, FIFO, firma del envoltorio y filtrado básico. El caso que amplía un filtro de suscripción usa 120 segundos para cubrir dos ventanas de ausencia.
+
+El único caso que agotó su presupuesto se repitió con 90 segundos. Falló porque una suscripción con `FilterPolicy` no recibió el mensaje que contenía el valor buscado dentro de un atributo `String.Array`. Otros casos pendientes ejercitan `PublishBatch`, filtros sobre el cuerpo del mensaje, confirmación de suscripciones y operaciones que requieren IAM, KMS o CloudFormation.
