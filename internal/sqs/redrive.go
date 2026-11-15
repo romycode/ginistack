@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
 type redriveAllow struct {
@@ -182,7 +184,7 @@ func (s *service) startMessageMove(request *http.Request, input startMoveInput) 
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	source := s.store.targetQueue(input.SourceARN)
-	if source == nil || !arnInRegion(input.SourceARN, requestRegion(request)) {
+	if source == nil || !arnInRegion(input.SourceARN, awshttp.Region(request)) {
 		return moveHandle{}, &apiError{"ResourceNotFoundException", "Source queue does not exist.", 400}
 	}
 	isDeadLetterQueue := false
@@ -318,7 +320,7 @@ func (s *service) listMessageMoves(request *http.Request, input listMoveInput) (
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	source := s.store.targetQueue(input.SourceARN)
-	if source == nil || !arnInRegion(input.SourceARN, requestRegion(request)) {
+	if source == nil || !arnInRegion(input.SourceARN, awshttp.Region(request)) {
 		return listMoveOutput{}, &apiError{"ResourceNotFoundException", "Source queue does not exist.", 400}
 	}
 	results := make([]moveProgress, 0, min(limit, len(source.moves)))
@@ -336,7 +338,7 @@ func (s *service) cancelMessageMove(request *http.Request, input moveHandle) (ca
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	for key, source := range s.store.queues {
-		if key.region != requestRegion(request) {
+		if key.region != awshttp.Region(request) {
 			continue
 		}
 		for _, task := range source.moves {

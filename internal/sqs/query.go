@@ -12,12 +12,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
 const queryNamespace = "http://queue.amazonaws.com/doc/2012-11-05/"
 
-func (r *router) serveQuery(w http.ResponseWriter, request *http.Request) {
-	if request.ParseForm() != nil {
+func (r *Handler) serveQuery(w http.ResponseWriter, request *http.Request) {
+	if awshttp.ParseForm(request) != nil {
 		writeQueryError(w, &apiError{"InvalidParameterValue", "Invalid AWS Query form.", 400})
 		return
 	}
@@ -36,7 +38,7 @@ func (r *router) serveQuery(w http.ResponseWriter, request *http.Request) {
 		writeQueryError(w, &apiError{"InvalidParameterValue", err.Error(), 400})
 		return
 	}
-	if _, present := input["QueueUrl"]; !present && (strings.HasPrefix(request.URL.Path, "/"+accountID+"/") || strings.HasPrefix(request.URL.Path, "/"+requestRegion(request)+"/"+accountID+"/")) {
+	if _, present := input["QueueUrl"]; !present && (strings.HasPrefix(request.URL.Path, "/"+accountID+"/") || strings.HasPrefix(request.URL.Path, "/"+awshttp.Region(request)+"/"+accountID+"/")) {
 		host := url.URL{Scheme: "http", Host: request.Host, Path: request.URL.Path}
 		if request.TLS != nil {
 			host.Scheme = "https"

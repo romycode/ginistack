@@ -1,7 +1,6 @@
 package sqs
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
 type apiError struct {
@@ -24,16 +25,14 @@ var (
 	serializationError = &apiError{"SerializationException", "Invalid or unsupported SQS request fields.", 400}
 )
 
-// The wire limit observed in AWS Emulator is separate from MaximumMessageSize.
-const maxRequestBody = 1600 * 1024
-
-type router struct {
+type Handler struct {
 	operations map[string]http.HandlerFunc
+	store      *store
 }
 
-func NewHandler() http.Handler {
+func NewHandler() *Handler {
 	api := &service{store: store{bodyCipher: newBodyCipher(), queues: make(map[queueKey]*queue), deleted: make(map[queueKey]time.Time), incarnations: make(map[string]deletedIncarnation)}, cursorKey: []byte(token())}
-	r := &router{operations: make(map[string]http.HandlerFunc)}
+	r := &Handler{operations: make(map[string]http.HandlerFunc), store: &api.store}
 	r.register("CreateQueue", api.createQueue)
 	r.register("GetQueueUrl", api.getQueueURL)
 	r.register("DeleteQueue", api.deleteQueue)
@@ -61,10 +60,10 @@ func NewHandler() http.Handler {
 }
 
 // register uses one typed operation for both wire protocols.
-func (r *router) register[Input any, Output any](name string, run func(*http.Request, Input) (Output, *apiError)) {
+func (r *Handler) register[Input any, Output any](name string, run func(*http.Request, Input) (Output, *apiError)) {
 	r.operations["AmazonSQS."+name] = func(w http.ResponseWriter, request *http.Request) {
 		var input Input
-		query := isQueryRequest(request)
+		query := awshttp.IsQuery(request)
 		writeFailure := writeError
 		if query {
 			writeFailure = writeQueryError
@@ -92,16 +91,16 @@ func (r *router) register[Input any, Output any](name string, run func(*http.Req
 	}
 }
 
-func (r *router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+func (r *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if !acceptRequestBody(w, request) {
+	if !awshttp.AcceptBody(w, request) {
 		return
 	}
 	w.Header().Set("x-amzn-RequestId", token())
-	if isQueryRequest(request) {
+	if awshttp.IsQuery(request) {
 		r.serveQuery(w, request)
 		return
 	}
@@ -125,38 +124,6 @@ func (r *router) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	operation(w, request)
-}
-
-func isQueryRequest(request *http.Request) bool {
-	mediaType, _, _ := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	return (request.Method == http.MethodPost && mediaType == "application/x-www-form-urlencoded") ||
-		(request.Method == http.MethodGet && request.URL.Query().Has("Action"))
-}
-
-func acceptRequestBody(w http.ResponseWriter, request *http.Request) bool {
-	if request.ContentLength > maxRequestBody {
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		return false
-	}
-	if request.ContentLength >= 0 {
-		return true
-	}
-
-	// Count streamed bodies before dispatch, even if the payload is malformed.
-	limited := http.MaxBytesReader(w, request.Body, maxRequestBody)
-	defer limited.Close()
-	payload, err := io.ReadAll(limited)
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-		} else {
-			w.WriteHeader(http.StatusBadRequest)
-		}
-		return false
-	}
-	request.Body = io.NopCloser(bytes.NewReader(payload))
-	return true
 }
 
 func writeError(w http.ResponseWriter, failure *apiError) {

@@ -1,6 +1,6 @@
 # Ginistack
 
-Emulador local de AWS escrito en Go 1.27. Incluye colas estándar y FIFO de SQS y usa solo la biblioteca estándar de Go. El método genérico `router.register[Input, Output]` conecta las operaciones tipadas con AWS JSON 1.0 y AWS Query/XML sobre el mismo estado.
+Emulador local de AWS escrito en Go 1.27. Incluye SQS y SNS y usa solo la biblioteca estándar de Go. SQS usa el método genérico `Handler.register[Input, Output]` para compartir operaciones entre AWS JSON 1.0 y AWS Query/XML. SNS usa AWS Query/XML en el mismo puerto.
 
 ## Arranque
 
@@ -18,7 +18,17 @@ aws sqs send-message --queue-url "$queue_url" --message-body 'hola'
 aws sqs receive-message --queue-url "$queue_url" --wait-time-seconds 2
 ```
 
+Para crear un tópico local de SNS en el mismo servidor:
+
+```sh
+export AWS_ENDPOINT_URL_SNS=http://127.0.0.1:4566
+topic_arn=$(aws sns create-topic --name orders --query TopicArn --output text)
+aws sns list-topics
+```
+
 ## Alcance
+
+### SQS
 
 - Crear, resolver, listar y borrar colas estándar y FIFO por región. La lista admite prefijos y paginación. Se pueden vaciar colas, gestionar sus etiquetas y consultar los mensajes disponibles, retrasados y en vuelo.
 - Enviar, recibir y borrar mensajes, conservar el cuerpo y su MD5, programar el retraso inicial y cambiar el tiempo de visibilidad. Al recibir, se pueden pedir el contador de entregas y las marcas de tiempo de envío y primera recepción.
@@ -32,6 +42,15 @@ aws sqs receive-message --queue-url "$queue_url" --wait-time-seconds 2
 - Políticas de cola con lectura, edición y borrado mediante `Policy`. `AddPermission` y `RemovePermission` modifican el mismo documento por `Sid`. El evaluador de `internal/policy` aplica un `Deny` explícito a `SendMessage` y `SendMessageBatch` para el principal local.
 
 El estado se guarda en memoria y se pierde al detener el proceso. Se usa una cuenta local fija y el servidor acepta credenciales de prueba sin verificar SigV4. Quedan pendientes las políticas de identidad de IAM, la autorización de otras operaciones y las integraciones con KMS, CloudFormation y CloudWatch.
+
+### SNS
+
+- Crear, listar y borrar tópicos estándar y FIFO por región, con paginación, atributos y etiquetas. Borrar el tópico elimina sus suscripciones.
+- Suscribir colas SQS, listar y consultar suscripciones, actualizar `RawMessageDelivery` y filtrar por igualdad de atributos `String` y `Number`.
+- Publicar hacia una cola SQS en modo raw o con el envoltorio de SNS. Los tópicos FIFO mantienen el orden por grupo y deduplican por ID o por contenido. La cola debe autorizar a `sns.amazonaws.com` a ejecutar `sqs:SendMessage` mediante su política. El evaluador compartido comprueba el ARN del tópico y aplica las denegaciones de la cola.
+- El envoltorio de los tópicos estándar incluye una firma verificable con el certificado local servido por Ginistack. El certificado y el estado de SNS duran lo que dura el proceso.
+
+Quedan pendientes `PublishBatch`, otros operadores y ámbitos de filtrado, suscripciones a otros protocolos e integraciones con otros servicios.
 
 ## Pruebas oficiales de AWS
 
@@ -47,6 +66,12 @@ Para ejecutar el directorio completo de SQS y ver también qué casos quedan pen
 
 ```sh
 ./tests/fidelity.sh --all-sqs
+```
+
+Para probar SNS y su entrega a SQS:
+
+```sh
+./tests/fidelity.sh --sns
 ```
 
 Para cubrir los casos de línea de comandos, instala AWS CLI v2 y déjala disponible en `PATH`. El runner oficial asigna 60 segundos por defecto y hasta 600 para los casos marcados como de tiempo real o que requieren herramientas lentas. Puedes fijar un límite distinto con `GINISTACK_CASE_TIMEOUT`.
@@ -78,3 +103,15 @@ SQS devuelve HTTP `413` con el cuerpo de respuesta vacío si el cuerpo de la sol
 | Atributos | Ida y vuelta de `String`, `Number` y `Binary`, MD5, selección por prefijo y validaciones de nombre, tipo y número. Las trazas válidas se conservan, las vacías se rechazan y las de tipo o formato inválido se descartan al entregar. | |
 | Cifrado | SSE-SQS conserva byte por byte el cuerpo y los atributos del mensaje. | Resolución de claves y permisos de SSE-KMS. |
 | Políticas e integraciones | Identidad local mediante `STS.GetCallerIdentity`, gestión de políticas de cola y permisos por `Sid`. Un `Deny` explícito bloquea el envío. | Evaluación de políticas de identidad y autorización de otras operaciones. El caso oficial de límites de políticas requiere crear usuarios en IAM. Quedan KMS, Lambda, CloudFormation y CloudWatch. |
+
+### Resultados de SNS
+
+La primera selección de regresión usa la misma revisión oficial. Cubre el ciclo de vida de tópicos y suscripciones, publicación, tamaño de mensajes, FIFO, formato y firma del envoltorio, filtrado y entrega a SQS con políticas de cola.
+
+| Directorio de la suite | Casos aprobados en la selección | Casos del directorio |
+| --- | ---: | ---: |
+| `sns` | 45 | 245 |
+| `sns__sqs` | 6 | 12 |
+| **Total** | **51** | **257** |
+
+El caso que verifica que ampliar un filtro no recupera mensajes descartados usa un presupuesto de 120 segundos para cubrir dos ventanas de ausencia. Los otros 206 casos de esos directorios quedan pendientes de evaluar en una ejecución completa.

@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
-const accountID = "000000000000"
+const accountID = awshttp.AccountID
 const localUserID = "AIDAGINISTACKLOCAL0000"
 const localUserARN = "arn:aws:iam::" + accountID + ":user/ginistack-local"
 
@@ -79,7 +81,7 @@ func (s *service) createQueue(request *http.Request, input createInput) (queueIn
 		}
 		return queueInput{}, &apiError{"InvalidParameterValue", message, 400}
 	}
-	key := queueKey{region: requestRegion(request), name: input.QueueName}
+	key := queueKey{region: awshttp.Region(request), name: input.QueueName}
 	arn := "arn:aws:sqs:" + key.region + ":" + accountID + ":" + key.name
 	if failure := s.store.create(key, arn, input.Attributes, input.Tags, request.TLS != nil); failure != nil {
 		return queueInput{}, failure
@@ -104,7 +106,7 @@ type getQueueURLInput struct {
 func (s *service) getQueueURL(request *http.Request, input getQueueURLInput) (queueInput, *apiError) {
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
-	key := queueKey{region: requestRegion(request), name: input.QueueName}
+	key := queueKey{region: awshttp.Region(request), name: input.QueueName}
 	if s.store.queues[key] == nil || (input.QueueOwnerAWSAccountID != "" && input.QueueOwnerAWSAccountID != accountID) {
 		return queueInput{}, missingQueue
 	}
@@ -255,7 +257,7 @@ func queueName(request *http.Request, input queueInput) (queueKey, *apiError) {
 		return queueKey{}, missingQueue
 	}
 	path := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	region := requestRegion(request)
+	region := awshttp.Region(request)
 	if len(path) == 3 {
 		if path[0] != region {
 			return queueKey{}, missingQueue

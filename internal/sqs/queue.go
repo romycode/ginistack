@@ -281,6 +281,10 @@ func (s *store) send(name queueKey, input messageInput, secureTransport bool) (s
 }
 
 func (q *queue) send(input messageInput) (sendOutput, *apiError) {
+	return q.sendWithinLimit(input, q.maximumSize)
+}
+
+func (q *queue) sendWithinLimit(input messageInput, limit int) (sendOutput, *apiError) {
 	if failure := q.validateFIFO(input); failure != nil {
 		return sendOutput{}, failure
 	}
@@ -290,8 +294,8 @@ func (q *queue) send(input messageInput) (sendOutput, *apiError) {
 	if failure := validateMessageAttributes(input.MessageAttributes); failure != nil {
 		return sendOutput{}, failure
 	}
-	if len(input.MessageBody)+attributeSize(input.MessageAttributes) > q.maximumSize {
-		return sendOutput{}, &apiError{"InvalidParameterValue", fmt.Sprintf("One or more parameters are invalid. Reason: Message must be shorter than %d bytes.", q.maximumSize), 400}
+	if len(input.MessageBody)+attributeSize(input.MessageAttributes) > limit {
+		return sendOutput{}, &apiError{"InvalidParameterValue", fmt.Sprintf("One or more parameters are invalid. Reason: Message must be shorter than %d bytes.", limit), 400}
 	}
 	trace, failure := messageTraceHeader(input.MessageSystemAttributes)
 	if failure != nil {

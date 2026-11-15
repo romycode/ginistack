@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/romycode/ginistack/internal/awshttp"
 )
 
 type listQueuesInput struct {
@@ -38,7 +40,7 @@ func (s *service) listQueues(request *http.Request, input listQueuesInput) (list
 				"Value for parameter MaxResults is invalid. Reason: MaxResults must be an integer between 1 and 1000.", 400}
 		}
 	}
-	region := requestRegion(request)
+	region := awshttp.Region(request)
 	scope := region + "/" + input.QueueNamePrefix
 	cursor := queueCursor{Prefix: scope}
 	if input.NextToken != "" {
